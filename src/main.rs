@@ -9,16 +9,25 @@ mod audio;
 mod screenshot;
 mod cursor_tracker;
 
-use app::state_machine::{VoiceState, VoiceStateTransition};
+use app::state_machine::{VoiceState, VoiceStateTransition, PointingInstruction};
 use audio::UiEvent;
 use audio::capture::MicCapture;
 use core::audio_rms::AudioPowerLevelTracker;
 use core::pcm16_converter;
+use core::conversation::ConversationHistory;
 use hotkey::{PushToTalkTransition, HotkeyBackend};
 use overlay::renderer::{self, CursorNavigationMode, OverlayRenderState};
 use tray::TrayMenuEvent;
 use log::info;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+
+#[derive(Clone, PartialEq)]
+enum LlmProvider {
+    Anthropic,
+    OpenAi,
+    WorkerProxy,
+    Disabled,
+}
 
 fn main() {
     // Load .env file if present (ignored if missing)
@@ -47,20 +56,43 @@ fn main() {
     // Active transcription session cancel handle
     let mut active_session_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
-    // API configuration: direct API key (dev) or worker proxy URL (distribution)
+    // API configuration
     let assemblyai_api_key = std::env::var("ASSEMBLYAI_API_KEY").ok();
+    let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
     let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok();
     let transcription_enabled = assemblyai_api_key.is_some() || worker_base_url.is_some();
 
+    // LLM provider: Anthropic (preferred) > OpenAI > Worker proxy > disabled
+    let llm_provider = if anthropic_api_key.is_some() {
+        info!("LLM: direct Anthropic API (Claude)");
+        LlmProvider::Anthropic
+    } else if openai_api_key.is_some() {
+        info!("LLM: direct OpenAI API");
+        LlmProvider::OpenAi
+    } else if worker_base_url.is_some() {
+        info!("LLM: via worker proxy (Claude)");
+        LlmProvider::WorkerProxy
+    } else {
+        log::warn!("Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable AI responses");
+        LlmProvider::Disabled
+    };
+
     if !transcription_enabled {
-        log::warn!("Set ASSEMBLYAI_API_KEY or CLICKY_WORKER_URL to enable transcription (mic + waveform still work)");
+        log::warn!("Set ASSEMBLYAI_API_KEY or CLICKY_WORKER_URL to enable transcription");
     } else if assemblyai_api_key.is_some() {
         info!("Transcription: direct AssemblyAI API");
     } else {
         info!("Transcription: via worker proxy");
     }
 
-    // Audio player for TTS playback (scaffold for Phase 3)
+    // Reusable HTTP client for API calls
+    let http_client = reqwest::Client::new();
+
+    // Conversation history (max 10 exchanges)
+    let mut conversation_history = ConversationHistory::new();
+
+    // Audio player for TTS playback (Phase 4)
     let _audio_player = match audio::playback::AudioPlayer::new() {
         Ok(player) => {
             info!("Audio output ready");
@@ -87,8 +119,7 @@ fn main() {
     // Initialize global hotkey (platform-specific backend)
     let hotkey_manager = hotkey::create(&platform);
 
-    // Create the overlay window (transparent, undecorated, topmost)
-    // TODO: Detect actual screen size instead of hardcoded 1920x1080
+    // Create the overlay window
     let screen_w = 1920;
     let screen_h = 1080;
     let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(screen_w, screen_h);
@@ -105,6 +136,8 @@ fn main() {
     let mut frame_count: u64 = 0;
     let mut last_transcript: Option<String> = None;
     let mut processing_since: Option<std::time::Instant> = None;
+    let mut claude_pipeline_active = false;
+    let mut responding_since: Option<std::time::Instant> = None;
 
     // Main render loop — runs at 60fps
     while !raylib_handle.window_should_close() {
@@ -141,12 +174,14 @@ fn main() {
                             voice_state = new_state;
                             render_state.voice_state = voice_state;
 
-                            // Cancel any active session (re-press while listening/processing)
+                            // Cancel any active session
                             if let Some(cancel_tx) = active_session_cancel.take() {
                                 let _ = cancel_tx.send(());
                             }
+                            claude_pipeline_active = false;
+                            responding_since = None;
 
-                            // Reset RMS tracker for fresh waveform
+                            // Reset RMS tracker
                             if let Ok(mut tracker) = rms_tracker.lock() {
                                 tracker.reset();
                             }
@@ -155,12 +190,9 @@ fn main() {
                             match mic_capture.start() {
                                 Ok(audio_rx) => {
                                     info!("Mic capture started");
-
-                                    // Spawn transcription bridge if API is configured
                                     if transcription_enabled {
                                         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
                                         active_session_cancel = Some(cancel_tx);
-
                                         let ui_tx = ui_event_tx.clone();
                                         let api_key = assemblyai_api_key.clone();
                                         let worker_url = worker_base_url.clone();
@@ -169,7 +201,6 @@ fn main() {
                                 }
                                 Err(err) => {
                                     log::error!("Mic capture failed: {}", err);
-                                    // Revert to Idle on mic failure
                                     if let Some(s) = voice_state.apply(VoiceStateTransition::Error(err.to_string())) {
                                         voice_state = s;
                                         render_state.voice_state = voice_state;
@@ -180,15 +211,9 @@ fn main() {
                     }
                     PushToTalkTransition::Released => {
                         info!("Push-to-talk: RELEASED");
-
-                        // Stop mic — this closes the cpal stream and the audio_rx channel,
-                        // which causes the spawn_blocking thread to flush its buffer and exit.
                         mic_capture.stop();
 
                         if let Some(cancel_tx) = active_session_cancel.take() {
-                            // Transcription session active — go to Processing, wait for result.
-                            // Signal the bridge AFTER mic stop so it can drain remaining audio
-                            // before sending ForceEndpoint.
                             if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
                                 voice_state = new_state;
                                 render_state.voice_state = voice_state;
@@ -211,29 +236,55 @@ fn main() {
             }
         }
 
-        // Poll async events from transcription bridge
+        // Poll async events
         while let Ok(event) = ui_event_rx.try_recv() {
             match event {
                 UiEvent::PartialTranscript(text) => {
                     info!("Partial transcript: {}", text);
                     last_transcript = Some(text);
-                    processing_since = None; // still getting updates
+                    processing_since = None;
                 }
                 UiEvent::FinalTranscript(text) => {
-                    // Use the final text, or fall back to last partial
                     let transcript = if text.is_empty() {
                         last_transcript.clone().unwrap_or_default()
                     } else {
                         text
                     };
-                    if !transcript.is_empty() {
+
+                    if transcript.is_empty() {
+                        voice_state = VoiceState::Idle;
+                        render_state.voice_state = voice_state;
+                        processing_since = None;
+                    } else if llm_provider != LlmProvider::Disabled {
                         info!("FINAL transcript: {}", transcript);
+                        last_transcript = Some(transcript.clone());
+                        processing_since = Some(std::time::Instant::now());
+                        claude_pipeline_active = true;
+
+                        let history: Vec<(String, String)> = conversation_history
+                            .exchanges()
+                            .map(|e| (e.user_transcript.clone(), e.assistant_response.clone()))
+                            .collect();
+
+                        let ui_tx = ui_event_tx.clone();
+                        let provider = llm_provider.clone();
+                        let anthro_key = anthropic_api_key.clone();
+                        let oai_key = openai_api_key.clone();
+                        let worker_url = worker_base_url.clone();
+                        let client = http_client.clone();
+                        let cursor_pos = cursor_tracker.get_position();
+
+                        tokio_rt.spawn(run_llm_pipeline(
+                            client, provider, anthro_key, oai_key, worker_url,
+                            transcript, cursor_pos, history, ui_tx,
+                        ));
+                    } else {
+                        info!("FINAL transcript (no Claude): {}", transcript);
                         last_transcript = Some(transcript);
+                        voice_state = VoiceState::Idle;
+                        render_state.voice_state = voice_state;
+                        processing_since = None;
                     }
-                    // TODO Phase 3: trigger screenshot → Claude → TTS pipeline
-                    voice_state = VoiceState::Idle;
-                    render_state.voice_state = voice_state;
-                    processing_since = None;
                 }
                 UiEvent::TranscriptionError(err) => {
                     log::error!("Transcription error: {}", err);
@@ -241,21 +292,87 @@ fn main() {
                     render_state.voice_state = voice_state;
                     processing_since = None;
                 }
+                UiEvent::ClaudeResponse { spoken_text, pointing_instruction, display_infos } => {
+                    if voice_state != VoiceState::Processing {
+                        continue;
+                    }
+
+                    info!("LLM response: {}", spoken_text);
+
+                    // Record in conversation history
+                    if let Some(ref transcript) = last_transcript {
+                        conversation_history.add_exchange(transcript.clone(), spoken_text.clone());
+                    }
+
+                    // Transition to Responding
+                    if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseReady {
+                        response_text: spoken_text.clone(),
+                        pointing_instruction: pointing_instruction.clone(),
+                    }) {
+                        voice_state = new_state;
+                        render_state.voice_state = voice_state;
+                    }
+
+                    // Start flight animation if pointing
+                    if let Some(ref instruction) = pointing_instruction {
+                        let target = core::coordinate_mapper::find_target_display(
+                            instruction.screen_number, &display_infos,
+                        );
+                        if let Some(display) = target {
+                            let coord = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(
+                                instruction.screenshot_x, instruction.screenshot_y, display,
+                            );
+                            render_state.start_flight_to(coord.x, coord.y, spoken_text.clone());
+                        }
+                    }
+
+                    // Set speech bubble text
+                    render_state.speech_bubble_text = spoken_text;
+                    render_state.speech_bubble_visible_char_count = render_state.speech_bubble_text.len();
+                    render_state.speech_bubble_opacity = 1.0;
+
+                    responding_since = Some(std::time::Instant::now());
+                    claude_pipeline_active = false;
+                    processing_since = None;
+                }
+                UiEvent::ClaudeError(err) => {
+                    log::error!("Claude error: {}", err);
+                    voice_state = VoiceState::Idle;
+                    render_state.voice_state = voice_state;
+                    processing_since = None;
+                    claude_pipeline_active = false;
+                }
             }
         }
 
-        // Timeout: if stuck in Processing for >5s with no updates, return to Idle
+        // Processing timeout
         if voice_state == VoiceState::Processing {
             let now = std::time::Instant::now();
             let since = processing_since.get_or_insert(now);
-            if now.duration_since(*since).as_secs() >= 3 {
+            let timeout_secs = if claude_pipeline_active { 30 } else { 3 };
+            if now.duration_since(*since).as_secs() >= timeout_secs {
                 log::warn!("Processing timeout — returning to Idle");
-                if let Some(ref text) = last_transcript {
-                    info!("Last transcript: {}", text);
-                }
                 voice_state = VoiceState::Idle;
                 render_state.voice_state = voice_state;
                 processing_since = None;
+                claude_pipeline_active = false;
+            }
+        }
+
+        // Responding → Idle after speech bubble display + flight complete
+        if voice_state == VoiceState::Responding {
+            let now = std::time::Instant::now();
+            let since = responding_since.get_or_insert(now);
+            let elapsed = now.duration_since(*since).as_secs();
+            let flight_done = render_state.navigation_mode != CursorNavigationMode::NavigatingToTarget;
+
+            if elapsed >= 4 && flight_done {
+                if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseComplete) {
+                    voice_state = new_state;
+                    render_state.voice_state = voice_state;
+                    render_state.return_to_following_mouse();
+                }
+                responding_since = None;
             }
         }
 
@@ -282,10 +399,7 @@ fn main() {
     info!("Clicky Desktop shutting down");
 }
 
-/// Async bridge between mic capture and AssemblyAI transcription.
-/// Runs on the tokio runtime. Receives audio chunks from the mic,
-/// converts to PCM16, streams to AssemblyAI, and forwards transcripts
-/// back to the render loop via ui_event_tx.
+/// Async bridge: mic audio → PCM16 → AssemblyAI WebSocket → transcripts
 async fn run_transcription_bridge(
     audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
     ui_tx: std_mpsc::Sender<UiEvent>,
@@ -295,11 +409,8 @@ async fn run_transcription_bridge(
 ) {
     let http_client = reqwest::Client::new();
 
-    // Fetch temporary streaming token (direct API or via worker proxy)
     let token = match api::assemblyai::fetch_temporary_streaming_token(
-        &http_client,
-        api_key.as_deref(),
-        worker_url.as_deref(),
+        &http_client, api_key.as_deref(), worker_url.as_deref(),
     ).await {
         Ok(t) => t,
         Err(e) => {
@@ -308,7 +419,6 @@ async fn run_transcription_bridge(
         }
     };
 
-    // Start WebSocket session
     let mut session = match api::assemblyai::StreamingTranscriptionSession::start(&token).await {
         Ok(s) => s,
         Err(e) => {
@@ -319,45 +429,26 @@ async fn run_transcription_bridge(
 
     info!("AssemblyAI transcription session started");
 
-    // Split session: take transcript receiver and clone audio sender for concurrent use
     let mut transcript_rx = session.take_transcript_receiver();
     let audio_sender = session.audio_sender();
-
-    // Bridge std::sync::mpsc::Receiver into async with a tokio channel
     let (async_audio_tx, mut async_audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
-    // Blocking thread reads from cpal's std::sync::mpsc, converts to PCM16,
-    // buffers to meet AssemblyAI's minimum chunk duration (50-1000ms),
-    // then sends to the async channel.
     tokio::task::spawn_blocking(move || {
-        // At 16kHz mono PCM16, 100ms = 1600 samples = 3200 bytes
         const MIN_CHUNK_BYTES: usize = 3200;
         let mut buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
-
         while let Ok(chunk) = audio_rx.recv() {
             let pcm16 = pcm16_converter::convert_float32_to_pcm16_mono(
-                &chunk.samples,
-                chunk.sample_rate,
-                chunk.channels,
+                &chunk.samples, chunk.sample_rate, chunk.channels,
             );
             buffer.extend_from_slice(&pcm16);
-
-            // Send when we have enough for ≥100ms of audio
             if buffer.len() >= MIN_CHUNK_BYTES {
-                if async_audio_tx.blocking_send(std::mem::take(&mut buffer)).is_err() {
-                    break;
-                }
+                if async_audio_tx.blocking_send(std::mem::take(&mut buffer)).is_err() { break; }
                 buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
             }
         }
-
-        // Flush remaining buffer
-        if !buffer.is_empty() {
-            let _ = async_audio_tx.blocking_send(buffer);
-        }
+        if !buffer.is_empty() { let _ = async_audio_tx.blocking_send(buffer); }
     });
 
-    // Forward transcripts to UI in background
     let ui_tx_for_transcripts = ui_tx.clone();
     let (final_tx, final_rx) = tokio::sync::oneshot::channel::<()>();
     let transcript_handle = tokio::spawn(async move {
@@ -368,40 +459,126 @@ async fn run_transcription_bridge(
                 api::assemblyai::TranscriptUpdate::Final(text) => UiEvent::FinalTranscript(text),
                 api::assemblyai::TranscriptUpdate::Error(err) => UiEvent::TranscriptionError(err),
             };
-            if ui_tx_for_transcripts.send(event).is_err() {
-                break;
-            }
-            if is_final {
-                let _ = final_tx.send(());
-                break;
-            }
+            if ui_tx_for_transcripts.send(event).is_err() { break; }
+            if is_final { let _ = final_tx.send(()); break; }
         }
     });
 
-    // Wait for cancel signal (hotkey released), then drain remaining audio and finalize
     let _ = cancel_rx.await;
-
-    // Mic is now stopped. Drain all remaining audio from the pipeline to AssemblyAI.
-    // The spawn_blocking thread will flush its buffer and close async_audio_tx when
-    // the std::sync::mpsc audio_rx channel closes (from mic_capture.stop()).
     while let Some(pcm16) = async_audio_rx.recv().await {
-        if audio_sender.send(pcm16).await.is_err() {
-            break;
-        }
+        if audio_sender.send(pcm16).await.is_err() { break; }
     }
 
     info!("Audio drained, requesting final transcript...");
     let _ = session.request_final_transcript().await;
 
-    // Wait briefly for Termination message, then clean up.
-    // AssemblyAI may not always send Termination, but the transcript
-    // is already delivered as partial turns — we use whatever we have.
     match tokio::time::timeout(tokio::time::Duration::from_millis(1500), final_rx).await {
         Ok(_) => {}
         Err(_) => {
-            // No Termination received — deliver last partial as final
             let _ = ui_tx.send(UiEvent::FinalTranscript(String::new()));
             transcript_handle.abort();
+        }
+    }
+}
+
+/// Async pipeline: screenshot → LLM API (Claude or OpenAI) → parse response → send to render loop
+async fn run_llm_pipeline(
+    http_client: reqwest::Client,
+    provider: LlmProvider,
+    anthropic_api_key: Option<String>,
+    openai_api_key: Option<String>,
+    worker_base_url: Option<String>,
+    transcript: String,
+    cursor_position: (f32, f32),
+    history_exchanges: Vec<(String, String)>,
+    ui_tx: std_mpsc::Sender<UiEvent>,
+) {
+    // Capture screenshots (blocking — JPEG encoding is CPU-bound)
+    // Falls back to text-only if screenshot capture isn't available (e.g. Wayland VM)
+    let (cx, cy) = cursor_position;
+    let capture = match tokio::task::spawn_blocking(move || {
+        screenshot::capture_all_screens(cx, cy)
+    }).await {
+        Ok(Ok(c)) => Some(c),
+        Ok(Err(e)) => {
+            log::warn!("Screenshot unavailable ({}), sending text-only to LLM", e);
+            None
+        }
+        Err(e) => {
+            log::warn!("Screenshot task failed ({}), sending text-only to LLM", e);
+            None
+        }
+    };
+
+    // Build messages with conversation history
+    let mut messages = Vec::new();
+    for (user_text, assistant_text) in &history_exchanges {
+        messages.push(serde_json::json!({"role": "user", "content": user_text}));
+        messages.push(serde_json::json!({"role": "assistant", "content": assistant_text}));
+    }
+
+    // Call the appropriate LLM provider
+    let system_prompt = api::claude::COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT;
+
+    let result: Result<String, String> = match provider {
+        LlmProvider::Anthropic | LlmProvider::WorkerProxy => {
+            let user_content = if let Some(ref cap) = capture {
+                api::claude::build_vision_message_content(&transcript, &cap.screenshots)
+            } else {
+                serde_json::json!(transcript)
+            };
+            messages.push(serde_json::json!({"role": "user", "content": user_content}));
+
+            let model = api::claude::DEFAULT_CLAUDE_MODEL;
+            info!("Sending to Claude ({})...", model);
+
+            api::claude::stream_claude_response(
+                &http_client,
+                anthropic_api_key.as_deref(),
+                worker_base_url.as_deref(),
+                model, system_prompt, messages, |_| {},
+            ).await.map_err(|e| e.to_string())
+        }
+        LlmProvider::OpenAi => {
+            let user_content = if let Some(ref cap) = capture {
+                api::openai::build_vision_message_content(&transcript, &cap.screenshots)
+            } else {
+                serde_json::json!(transcript)
+            };
+            messages.push(serde_json::json!({"role": "user", "content": user_content}));
+
+            let model = api::openai::DEFAULT_OPENAI_MODEL;
+            info!("Sending to OpenAI ({})...", model);
+
+            api::openai::stream_openai_response(
+                &http_client,
+                openai_api_key.as_deref().unwrap_or(""),
+                model, system_prompt, messages, |_| {},
+            ).await.map_err(|e| e.to_string())
+        }
+        LlmProvider::Disabled => unreachable!(),
+    };
+
+    match result {
+        Ok(response_text) => {
+            let parsed = core::point_parser::parse_claude_response(&response_text);
+
+            let pointing = parsed.pointing.map(|p| PointingInstruction {
+                screenshot_x: p.screenshot_pixel_x,
+                screenshot_y: p.screenshot_pixel_y,
+                label: p.element_label,
+                screen_number: p.screen_number,
+            });
+
+            let _ = ui_tx.send(UiEvent::ClaudeResponse {
+                spoken_text: parsed.spoken_text,
+                pointing_instruction: pointing,
+                display_infos: capture.as_ref().map_or(vec![], |c| c.display_infos.clone()),
+            });
+        }
+        Err(e) => {
+            log::error!("LLM API error: {}", e);
+            let _ = ui_tx.send(UiEvent::ClaudeError(e.to_string()));
         }
     }
 }

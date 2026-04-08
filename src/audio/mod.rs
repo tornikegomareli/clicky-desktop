@@ -2,13 +2,20 @@ pub mod capture;
 pub mod playback;
 
 use std::fmt;
+use crate::app::state_machine::PointingInstruction;
+use crate::core::coordinate_mapper::DisplayInfo;
 
 /// Events sent from async background tasks to the synchronous render loop.
-#[derive(Debug)]
 pub enum UiEvent {
     PartialTranscript(String),
     FinalTranscript(String),
     TranscriptionError(String),
+    ClaudeResponse {
+        spoken_text: String,
+        pointing_instruction: Option<PointingInstruction>,
+        display_infos: Vec<DisplayInfo>,
+    },
+    ClaudeError(String),
 }
 
 /// Audio subsystem errors. All are recoverable — the app continues without audio.
