@@ -1,66 +1,71 @@
 /// Global push-to-talk hotkey detection.
 ///
-/// Uses `global-hotkey` crate on Windows and X11.
-/// On Wayland (Hyprland), falls back to `evdev` for direct input device reading.
-///
-/// The hotkey is Ctrl+Alt (modifier-only on macOS maps to Ctrl+Alt on Linux/Win).
-/// Press = start recording, Release = stop recording and submit.
+/// Platform strategy:
+///   Linux/Wayland → evdev (reads keyboard from /dev/input/ directly)
+///   Linux/X11     → global-hotkey crate (X11 XGrabKey)
+///   Windows       → global-hotkey crate (Win32 RegisterHotKey)
+///   Fallback      → global-hotkey crate
 
-use global_hotkey::{GlobalHotKeyManager, GlobalHotKeyEvent, HotKeyState};
-use global_hotkey::hotkey::{HotKey, Modifiers, Code};
-use log::{info, warn, error};
-use std::sync::mpsc as std_mpsc;
+#[cfg(target_os = "linux")]
+mod evdev_hotkey;
+mod global_hotkey_backend;
 
-/// Push-to-talk shortcut transitions — matches the macOS ShortcutTransition enum.
+use crate::app::platform::{PlatformInfo, OperatingSystem, DisplayServer};
+
+/// Push-to-talk shortcut transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushToTalkTransition {
     Pressed,
     Released,
 }
 
-/// Manages the global push-to-talk hotkey registration and event detection.
-pub struct PushToTalkHotkeyManager {
-    _hotkey_manager: GlobalHotKeyManager,
+/// Trait for hotkey detection, regardless of platform.
+pub trait HotkeyBackend: Send {
+    fn poll_hotkey_event(&self) -> Option<PushToTalkTransition>;
 }
 
-impl PushToTalkHotkeyManager {
-    /// Registers the global Ctrl+Space hotkey for push-to-talk.
-    ///
-    /// Note: We use Ctrl+Space instead of Ctrl+Alt because `global-hotkey`
-    /// requires a key code (not just modifiers). The macOS version uses
-    /// modifier-only (Ctrl+Option), but on Linux/Windows a key trigger
-    /// is needed for the global-hotkey crate.
-    pub fn new() -> Result<Self, String> {
-        let hotkey_manager = GlobalHotKeyManager::new()
-            .map_err(|e| format!("Failed to create hotkey manager: {}", e))?;
-
-        // Register Ctrl+Space as the push-to-talk hotkey
-        let push_to_talk_hotkey = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
-
-        hotkey_manager
-            .register(push_to_talk_hotkey)
-            .map_err(|e| format!("Failed to register hotkey: {}", e))?;
-
-        info!("Global hotkey registered: Ctrl+Space for push-to-talk");
-
-        Ok(Self {
-            _hotkey_manager: hotkey_manager,
-        })
-    }
-
-    /// Checks for pending hotkey events. Returns a transition if detected.
-    /// Should be called each frame from the main loop.
-    pub fn poll_hotkey_event(&self) -> Option<PushToTalkTransition> {
-        if let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            match event.state() {
-                HotKeyState::Pressed => {
-                    return Some(PushToTalkTransition::Pressed);
+/// Creates the best hotkey backend for the current platform.
+pub fn create(platform: &PlatformInfo) -> Option<Box<dyn HotkeyBackend>> {
+    match platform.os {
+        #[cfg(target_os = "linux")]
+        OperatingSystem::Linux => {
+            if platform.display_server == Some(DisplayServer::Wayland) {
+                // X11 XGrabKey doesn't work on XWayland — use evdev
+                match evdev_hotkey::EvdevHotkeyManager::new() {
+                    Some(manager) => {
+                        log::info!("Hotkey: evdev (Wayland) — hold Ctrl+` to talk");
+                        return Some(Box::new(manager));
+                    }
+                    None => {
+                        log::warn!("evdev hotkey unavailable — trying global-hotkey fallback");
+                    }
                 }
-                HotKeyState::Released => {
-                    return Some(PushToTalkTransition::Released);
+            }
+            // X11 or fallback
+            match global_hotkey_backend::GlobalHotkeyManager::new() {
+                Ok(manager) => {
+                    log::info!("Hotkey: global-hotkey (X11) — Ctrl+Space push-to-talk");
+                    Some(Box::new(manager))
+                }
+                Err(err) => {
+                    log::warn!("Global hotkey not available: {}", err);
+                    None
                 }
             }
         }
-        None
+
+        #[allow(unreachable_patterns)]
+        _ => {
+            match global_hotkey_backend::GlobalHotkeyManager::new() {
+                Ok(manager) => {
+                    log::info!("Hotkey: global-hotkey — Ctrl+Space push-to-talk");
+                    Some(Box::new(manager))
+                }
+                Err(err) => {
+                    log::warn!("Global hotkey not available: {}", err);
+                    None
+                }
+            }
+        }
     }
 }
