@@ -30,36 +30,51 @@ const FINAL_TRANSCRIPT_GRACE_PERIOD_SECONDS: f64 = 1.4;
 /// Fallback deadline if the grace period doesn't produce a result.
 const FINAL_TRANSCRIPT_FALLBACK_DELAY_SECONDS: f64 = 2.8;
 
-/// Fetches a temporary authentication token from the Cloudflare Worker.
+/// Fetches a temporary streaming token from AssemblyAI.
+///
+/// Supports two modes:
+/// - **Direct API**: pass `api_key` to call AssemblyAI directly (for development)
+/// - **Worker proxy**: pass `worker_base_url` to go through a Cloudflare Worker (for distribution)
+///
 /// The token is valid for 480 seconds (8 minutes).
 pub async fn fetch_temporary_streaming_token(
     http_client: &Client,
-    worker_base_url: &str,
+    api_key: Option<&str>,
+    worker_base_url: Option<&str>,
 ) -> Result<String, TranscriptionError> {
-    let token_endpoint_url = format!("{}/transcribe-token", worker_base_url);
-
-    let response = http_client
-        .post(&token_endpoint_url)
-        .send()
-        .await
-        .map_err(|err: reqwest::Error| TranscriptionError::TokenFetchError(err.to_string()))?;
+    let response = if let Some(key) = api_key {
+        // Direct API call — GET with auth header
+        http_client
+            .get("https://streaming.assemblyai.com/v3/token?expires_in_seconds=480")
+            .header("Authorization", key)
+            .send()
+            .await
+            .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?
+    } else if let Some(base_url) = worker_base_url {
+        // Worker proxy — proxy adds the API key
+        http_client
+            .post(format!("{}/transcribe-token", base_url))
+            .send()
+            .await
+            .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?
+    } else {
+        return Err(TranscriptionError::TokenFetchError(
+            "No API key or worker URL configured".into(),
+        ));
+    };
 
     if !response.status().is_success() {
         let status = response.status();
-        let error_body = response
-            .text()
-            .await
-            .unwrap_or_else(|_: reqwest::Error| "unable to read error body".to_string());
+        let body = response.text().await.unwrap_or_default();
         return Err(TranscriptionError::TokenFetchError(format!(
-            "HTTP {}: {}",
-            status, error_body
+            "HTTP {}: {}", status, body
         )));
     }
 
     let token_response: TokenResponse = response
-        .json::<TokenResponse>()
+        .json()
         .await
-        .map_err(|err: reqwest::Error| TranscriptionError::TokenFetchError(err.to_string()))?;
+        .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?;
 
     debug!("Fetched AssemblyAI streaming token");
     Ok(token_response.token)
@@ -105,13 +120,13 @@ impl StreamingTranscriptionSession {
         temporary_auth_token: &str,
     ) -> Result<Self, TranscriptionError> {
         let websocket_url = format!(
-            "{}?sample_rate={}&encoding={}&format_turns=true&speech_model={}",
-            ASSEMBLYAI_WEBSOCKET_BASE_URL, AUDIO_SAMPLE_RATE, AUDIO_ENCODING, SPEECH_MODEL
+            "{}?sample_rate={}&encoding={}&speech_model={}&token={}",
+            ASSEMBLYAI_WEBSOCKET_BASE_URL, AUDIO_SAMPLE_RATE, AUDIO_ENCODING, SPEECH_MODEL,
+            temporary_auth_token,
         );
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&websocket_url)
-            .header("Authorization", temporary_auth_token)
             .header("Host", "streaming.assemblyai.com")
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
@@ -138,8 +153,10 @@ impl StreamingTranscriptionSession {
 
         // Audio sender task: forwards PCM16 data to the WebSocket as binary messages
         tokio::spawn(async move {
+            debug!("Audio sender task started");
             loop {
                 tokio::select! {
+                    biased; // prioritize audio over control to avoid starving audio
                     audio_data = audio_receiver.recv() => {
                         match audio_data {
                             Some(data) => {
@@ -148,25 +165,38 @@ impl StreamingTranscriptionSession {
                                     break;
                                 }
                             }
-                            None => break, // channel closed
+                            None => {
+                                debug!("Audio channel closed, stopping sender task");
+                                break;
+                            }
                         }
                     }
                     control_message = control_receiver.recv() => {
                         match control_message {
                             Some(ControlMessage::RequestFinalTranscript) => {
+                                debug!("Sending ForceEndpoint to AssemblyAI");
                                 let force_endpoint_message = serde_json::json!({"type": "ForceEndpoint"});
                                 if let Err(err) = websocket_writer.send(Message::Text(force_endpoint_message.to_string().into())).await {
                                     error!("WebSocket ForceEndpoint send error: {}", err);
                                 }
                             }
-                            Some(ControlMessage::Cancel) | None => {
-                                let _ = websocket_writer.close().await;
+                            Some(ControlMessage::Cancel) => {
+                                debug!("Cancel received, sending Terminate");
+                                let terminate = serde_json::json!({"type": "Terminate"});
+                                let _ = websocket_writer.send(Message::Text(terminate.to_string().into())).await;
+                                break;
+                            }
+                            None => {
+                                debug!("Control channel closed, sending Terminate");
+                                let terminate = serde_json::json!({"type": "Terminate"});
+                                let _ = websocket_writer.send(Message::Text(terminate.to_string().into())).await;
                                 break;
                             }
                         }
                     }
                 }
             }
+            debug!("Audio sender task ended");
         });
 
         // Transcript receiver task: parses incoming WebSocket messages and
@@ -187,16 +217,30 @@ impl StreamingTranscriptionSession {
 
                 let text = match message {
                     Message::Text(text) => text.to_string(),
-                    Message::Close(_) => break,
+                    Message::Close(frame) => {
+                        debug!("WebSocket close frame: {:?}", frame);
+                        break;
+                    }
                     _ => continue,
                 };
 
+                debug!("WS recv: {}", &text[..text.len().min(200)]);
+
                 // Parse the message type
                 let Ok(envelope) = serde_json::from_str::<MessageEnvelope>(&text) else {
+                    debug!("Could not parse message envelope, skipping");
                     continue;
                 };
 
                 match envelope.message_type.as_str() {
+                    "Begin" => {
+                        debug!("AssemblyAI session begun");
+                        continue;
+                    }
+                    "SpeechStarted" => {
+                        debug!("Speech detected");
+                        continue;
+                    }
                     "Turn" | "turn" => {
                         if let Ok(turn) = serde_json::from_str::<TurnMessage>(&text) {
                             let turn_order = turn.turn_order.unwrap_or(0);
@@ -226,7 +270,7 @@ impl StreamingTranscriptionSession {
                                 .await;
                         }
                     }
-                    "Termination" | "termination" | "FinalTranscript" | "session_terminated" => {
+                    "Termination" => {
                         if !has_delivered_final {
                             has_delivered_final = true;
                             let full_transcript = compose_transcript_from_turns(&stored_turns);
