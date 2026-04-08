@@ -21,6 +21,8 @@ use log::info;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
 fn main() {
+    // Load .env file if present (ignored if missing)
+    let _ = dotenvy::dotenv();
     env_logger::init();
 
     let platform = app::platform::detect();
@@ -45,13 +47,17 @@ fn main() {
     // Active transcription session cancel handle
     let mut active_session_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
-    // Worker proxy URL for API calls (holds API keys server-side)
-    let worker_base_url = std::env::var("CLICKY_WORKER_URL")
-        .unwrap_or_else(|_| "https://your-worker-name.your-subdomain.workers.dev".into());
-    let worker_configured = !worker_base_url.contains("your-worker-name");
+    // API configuration: direct API key (dev) or worker proxy URL (distribution)
+    let assemblyai_api_key = std::env::var("ASSEMBLYAI_API_KEY").ok();
+    let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok();
+    let transcription_enabled = assemblyai_api_key.is_some() || worker_base_url.is_some();
 
-    if !worker_configured {
-        log::warn!("CLICKY_WORKER_URL not set — transcription disabled (mic + waveform still work)");
+    if !transcription_enabled {
+        log::warn!("Set ASSEMBLYAI_API_KEY or CLICKY_WORKER_URL to enable transcription (mic + waveform still work)");
+    } else if assemblyai_api_key.is_some() {
+        info!("Transcription: direct AssemblyAI API");
+    } else {
+        info!("Transcription: via worker proxy");
     }
 
     // Audio player for TTS playback (scaffold for Phase 3)
@@ -97,6 +103,8 @@ fn main() {
     info!("Entering main render loop at 60fps");
 
     let mut frame_count: u64 = 0;
+    let mut last_transcript: Option<String> = None;
+    let mut processing_since: Option<std::time::Instant> = None;
 
     // Main render loop — runs at 60fps
     while !raylib_handle.window_should_close() {
@@ -148,14 +156,15 @@ fn main() {
                                 Ok(audio_rx) => {
                                     info!("Mic capture started");
 
-                                    // Spawn transcription bridge if worker is configured
-                                    if worker_configured {
+                                    // Spawn transcription bridge if API is configured
+                                    if transcription_enabled {
                                         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
                                         active_session_cancel = Some(cancel_tx);
 
                                         let ui_tx = ui_event_tx.clone();
-                                        let url = worker_base_url.clone();
-                                        tokio_rt.spawn(run_transcription_bridge(audio_rx, ui_tx, url, cancel_rx));
+                                        let api_key = assemblyai_api_key.clone();
+                                        let worker_url = worker_base_url.clone();
+                                        tokio_rt.spawn(run_transcription_bridge(audio_rx, ui_tx, api_key, worker_url, cancel_rx));
                                     }
                                 }
                                 Err(err) => {
@@ -171,19 +180,23 @@ fn main() {
                     }
                     PushToTalkTransition::Released => {
                         info!("Push-to-talk: RELEASED");
-                        if let Some(new_state) =
-                            voice_state.apply(VoiceStateTransition::HotkeyReleased)
-                        {
-                            voice_state = new_state;
-                            render_state.voice_state = voice_state;
 
-                            // Stop mic capture
-                            mic_capture.stop();
+                        // Stop mic — this closes the cpal stream and the audio_rx channel,
+                        // which causes the spawn_blocking thread to flush its buffer and exit.
+                        mic_capture.stop();
 
-                            // Signal transcription session to request final transcript
-                            if let Some(cancel_tx) = active_session_cancel.take() {
-                                let _ = cancel_tx.send(());
+                        if let Some(cancel_tx) = active_session_cancel.take() {
+                            // Transcription session active — go to Processing, wait for result.
+                            // Signal the bridge AFTER mic stop so it can drain remaining audio
+                            // before sending ForceEndpoint.
+                            if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
+                                voice_state = new_state;
+                                render_state.voice_state = voice_state;
                             }
+                            let _ = cancel_tx.send(());
+                        } else {
+                            voice_state = VoiceState::Idle;
+                            render_state.voice_state = voice_state;
                         }
                     }
                 }
@@ -195,11 +208,6 @@ fn main() {
             if let Ok(tracker) = rms_tracker.lock() {
                 render_state.audio_power_history = tracker.history().to_vec();
                 render_state.audio_power_level = tracker.current_level();
-
-                // Log audio level every 30 frames (~0.5s) to confirm capture is working
-                if frame_count % 30 == 0 {
-                    info!("Audio RMS: {:.4}", tracker.current_level());
-                }
             }
         }
 
@@ -208,23 +216,46 @@ fn main() {
             match event {
                 UiEvent::PartialTranscript(text) => {
                     info!("Partial transcript: {}", text);
+                    last_transcript = Some(text);
+                    processing_since = None; // still getting updates
                 }
                 UiEvent::FinalTranscript(text) => {
-                    info!("FINAL transcript: {}", text);
-                    // TODO Phase 3: trigger screenshot → Claude → TTS pipeline
-                    // For now, return to Idle after receiving final transcript
-                    if let Some(s) = voice_state.apply(VoiceStateTransition::Error("transcript received".into())) {
-                        voice_state = s;
-                        render_state.voice_state = voice_state;
+                    // Use the final text, or fall back to last partial
+                    let transcript = if text.is_empty() {
+                        last_transcript.clone().unwrap_or_default()
+                    } else {
+                        text
+                    };
+                    if !transcript.is_empty() {
+                        info!("FINAL transcript: {}", transcript);
+                        last_transcript = Some(transcript);
                     }
+                    // TODO Phase 3: trigger screenshot → Claude → TTS pipeline
+                    voice_state = VoiceState::Idle;
+                    render_state.voice_state = voice_state;
+                    processing_since = None;
                 }
                 UiEvent::TranscriptionError(err) => {
                     log::error!("Transcription error: {}", err);
-                    if let Some(s) = voice_state.apply(VoiceStateTransition::Error(err)) {
-                        voice_state = s;
-                        render_state.voice_state = voice_state;
-                    }
+                    voice_state = VoiceState::Idle;
+                    render_state.voice_state = voice_state;
+                    processing_since = None;
                 }
+            }
+        }
+
+        // Timeout: if stuck in Processing for >5s with no updates, return to Idle
+        if voice_state == VoiceState::Processing {
+            let now = std::time::Instant::now();
+            let since = processing_since.get_or_insert(now);
+            if now.duration_since(*since).as_secs() >= 3 {
+                log::warn!("Processing timeout — returning to Idle");
+                if let Some(ref text) = last_transcript {
+                    info!("Last transcript: {}", text);
+                }
+                voice_state = VoiceState::Idle;
+                render_state.voice_state = voice_state;
+                processing_since = None;
             }
         }
 
@@ -258,13 +289,18 @@ fn main() {
 async fn run_transcription_bridge(
     audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
     ui_tx: std_mpsc::Sender<UiEvent>,
-    worker_base_url: String,
+    api_key: Option<String>,
+    worker_url: Option<String>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     let http_client = reqwest::Client::new();
 
-    // Fetch temporary streaming token from worker proxy
-    let token = match api::assemblyai::fetch_temporary_streaming_token(&http_client, &worker_base_url).await {
+    // Fetch temporary streaming token (direct API or via worker proxy)
+    let token = match api::assemblyai::fetch_temporary_streaming_token(
+        &http_client,
+        api_key.as_deref(),
+        worker_url.as_deref(),
+    ).await {
         Ok(t) => t,
         Err(e) => {
             let _ = ui_tx.send(UiEvent::TranscriptionError(format!("Token fetch failed: {:?}", e)));
@@ -290,17 +326,34 @@ async fn run_transcription_bridge(
     // Bridge std::sync::mpsc::Receiver into async with a tokio channel
     let (async_audio_tx, mut async_audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
-    // Blocking thread reads from cpal's std::sync::mpsc, converts to PCM16, sends to async channel
+    // Blocking thread reads from cpal's std::sync::mpsc, converts to PCM16,
+    // buffers to meet AssemblyAI's minimum chunk duration (50-1000ms),
+    // then sends to the async channel.
     tokio::task::spawn_blocking(move || {
+        // At 16kHz mono PCM16, 100ms = 1600 samples = 3200 bytes
+        const MIN_CHUNK_BYTES: usize = 3200;
+        let mut buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
+
         while let Ok(chunk) = audio_rx.recv() {
             let pcm16 = pcm16_converter::convert_float32_to_pcm16_mono(
                 &chunk.samples,
                 chunk.sample_rate,
                 chunk.channels,
             );
-            if async_audio_tx.blocking_send(pcm16).is_err() {
-                break;
+            buffer.extend_from_slice(&pcm16);
+
+            // Send when we have enough for ≥100ms of audio
+            if buffer.len() >= MIN_CHUNK_BYTES {
+                if async_audio_tx.blocking_send(std::mem::take(&mut buffer)).is_err() {
+                    break;
+                }
+                buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
             }
+        }
+
+        // Flush remaining buffer
+        if !buffer.is_empty() {
+            let _ = async_audio_tx.blocking_send(buffer);
         }
     });
 
@@ -325,28 +378,30 @@ async fn run_transcription_bridge(
         }
     });
 
-    // Forward audio to AssemblyAI until cancel signal
-    tokio::select! {
-        _ = async {
-            while let Some(pcm16) = async_audio_rx.recv().await {
-                if audio_sender.send(pcm16).await.is_err() {
-                    let _ = ui_tx.send(UiEvent::TranscriptionError("Audio send failed: session closed".into()));
-                    break;
-                }
-            }
-        } => {}
+    // Wait for cancel signal (hotkey released), then drain remaining audio and finalize
+    let _ = cancel_rx.await;
 
-        _ = cancel_rx => {
-            info!("Requesting final transcript...");
-            let _ = session.request_final_transcript().await;
+    // Mic is now stopped. Drain all remaining audio from the pipeline to AssemblyAI.
+    // The spawn_blocking thread will flush its buffer and close async_audio_tx when
+    // the std::sync::mpsc audio_rx channel closes (from mic_capture.stop()).
+    while let Some(pcm16) = async_audio_rx.recv().await {
+        if audio_sender.send(pcm16).await.is_err() {
+            break;
         }
     }
 
-    // Wait for final transcript (up to 3s)
-    let _ = tokio::time::timeout(
-        tokio::time::Duration::from_secs(3),
-        final_rx,
-    ).await;
+    info!("Audio drained, requesting final transcript...");
+    let _ = session.request_final_transcript().await;
 
-    transcript_handle.abort();
+    // Wait briefly for Termination message, then clean up.
+    // AssemblyAI may not always send Termination, but the transcript
+    // is already delivered as partial turns — we use whatever we have.
+    match tokio::time::timeout(tokio::time::Duration::from_millis(1500), final_rx).await {
+        Ok(_) => {}
+        Err(_) => {
+            // No Termination received — deliver last partial as final
+            let _ = ui_tx.send(UiEvent::FinalTranscript(String::new()));
+            transcript_handle.abort();
+        }
+    }
 }
