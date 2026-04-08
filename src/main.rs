@@ -274,9 +274,10 @@ fn main() {
                         let client = http_client.clone();
                         let cursor_pos = cursor_tracker.get_position();
 
+                        let plat = platform.clone();
                         tokio_rt.spawn(run_llm_pipeline(
                             client, provider, anthro_key, oai_key, worker_url,
-                            transcript, cursor_pos, history, ui_tx,
+                            transcript, cursor_pos, history, plat, ui_tx,
                         ));
                     } else {
                         info!("FINAL transcript (no Claude): {}", transcript);
@@ -491,12 +492,13 @@ async fn run_llm_pipeline(
     transcript: String,
     cursor_position: (f32, f32),
     history_exchanges: Vec<(String, String)>,
+    platform: app::platform::PlatformInfo,
     ui_tx: std_mpsc::Sender<UiEvent>,
 ) {
     // Capture screenshots (blocking — JPEG encoding is CPU-bound)
     let (cx, cy) = cursor_position;
     let capture = match tokio::task::spawn_blocking(move || {
-        screenshot::capture_all_screens(cx, cy)
+        screenshot::capture_all_screens(cx, cy, &platform)
     }).await {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
