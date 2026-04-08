@@ -24,6 +24,7 @@ log = "0.4"
 env_logger = "0.11"
 base64 = "0.22"
 dotenvy = "0.15"
+xcap = "0.9"
 raylib = { version = "5", features = ["opengl_21"] }
 tray-icon = "0.19"
 global-hotkey = "0.6"
