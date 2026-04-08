@@ -9,6 +9,8 @@ use serde_json::json;
 use futures_util::StreamExt;
 use log::{error, debug};
 
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-20250514";
+
 /// The system prompt that defines Clicky's personality and behavior.
 /// Reused verbatim from CompanionManager.swift:544-577.
 pub const COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT: &str = r#"you're clicky, a friendly always-on companion that lives in the user's system tray. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
@@ -63,9 +65,12 @@ pub struct ScreenshotForClaude {
 /// * `system_prompt` - System prompt text
 /// * `messages` - Pre-built messages array (from ConversationHistory::build_claude_messages_payload)
 /// * `on_text_delta` - Callback invoked with each text chunk as it arrives
+/// Streams a Claude response via SSE.
+/// Supports direct API mode (api_key) and worker proxy mode (worker_base_url).
 pub async fn stream_claude_response(
     http_client: &Client,
-    worker_base_url: &str,
+    api_key: Option<&str>,
+    worker_base_url: Option<&str>,
     model: &str,
     system_prompt: &str,
     messages: Vec<serde_json::Value>,
@@ -79,17 +84,32 @@ pub async fn stream_claude_response(
         "stream": true,
     });
 
-    let chat_endpoint_url = format!("{}/chat", worker_base_url);
-
-    debug!("Sending Claude request to {}", chat_endpoint_url);
-
-    let response = http_client
-        .post(&chat_endpoint_url)
-        .header("content-type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|err: reqwest::Error| ClaudeApiError::NetworkError(err.to_string()))?;
+    let response = if let Some(key) = api_key {
+        // Direct Anthropic API
+        debug!("Sending Claude request to Anthropic API (direct)");
+        http_client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| ClaudeApiError::NetworkError(e.to_string()))?
+    } else if let Some(base_url) = worker_base_url {
+        // Worker proxy
+        let url = format!("{}/chat", base_url);
+        debug!("Sending Claude request to {}", url);
+        http_client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| ClaudeApiError::NetworkError(e.to_string()))?
+    } else {
+        return Err(ClaudeApiError::NetworkError("No API key or worker URL configured".into()));
+    };
 
     if !response.status().is_success() {
         let status = response.status();
