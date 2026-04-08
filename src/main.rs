@@ -119,9 +119,8 @@ fn main() {
     // Initialize global hotkey (platform-specific backend)
     let hotkey_manager = hotkey::create(&platform);
 
-    // Create the overlay window
-    let screen_w = 1920;
-    let screen_h = 1080;
+    // Detect actual screen size for the overlay window
+    let (screen_w, screen_h) = screenshot::detect_screen_size(&platform);
     let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(screen_w, screen_h);
 
     // Create platform-appropriate cursor tracker

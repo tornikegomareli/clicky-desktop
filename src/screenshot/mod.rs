@@ -97,46 +97,213 @@ fn capture_gnome_no_flash(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult,
     result
 }
 
-/// Capture using grim (wlroots compositors). Silent, no flash.
-fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
-    let output = std::process::Command::new("grim")
-        .arg("-t").arg("png")
-        .arg("-")
+/// Monitor geometry from hyprctl/swaymsg, used for accurate coordinate mapping.
+#[derive(Debug, Clone)]
+struct WlrMonitorInfo {
+    name: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+
+/// Queries monitor geometry from Hyprland via `hyprctl monitors -j`.
+/// Returns logical (scaled) dimensions — the coordinate space the compositor uses.
+fn query_wlr_monitors() -> Option<Vec<WlrMonitorInfo>> {
+    let output = std::process::Command::new("hyprctl")
+        .args(["monitors", "-j"])
         .output()
-        .map_err(|e| ScreenshotError::CaptureError(format!("grim not found: {}", e)))?;
+        .ok()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ScreenshotError::CaptureError(format!("grim failed: {}", stderr)));
+        // Try swaymsg as fallback for Sway
+        let output = std::process::Command::new("swaymsg")
+            .args(["-t", "get_outputs", "--raw"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return parse_sway_monitors(&output.stdout);
     }
 
-    let img = image::load_from_memory_with_format(&output.stdout, image::ImageFormat::Png)
-        .map_err(|e| ScreenshotError::CaptureError(format!("Failed to decode grim output: {}", e)))?
-        .to_rgba8();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let monitors = json.as_array()?;
 
-    let (orig_w, orig_h) = (img.width(), img.height());
-    log::info!("grim captured: {}x{}", orig_w, orig_h);
+    let mut result = Vec::new();
+    for monitor in monitors {
+        let name = monitor["name"].as_str().unwrap_or("").to_string();
+        let x = monitor["x"].as_f64().unwrap_or(0.0);
+        let y = monitor["y"].as_f64().unwrap_or(0.0);
+        let width = monitor["width"].as_f64().unwrap_or(1920.0);
+        let height = monitor["height"].as_f64().unwrap_or(1080.0);
+        let scale = monitor["scale"].as_f64().unwrap_or(1.0);
 
-    let scaled = scale_image(&img);
-    let (sw, sh) = (scaled.width(), scaled.height());
-    let jpeg_data = encode_jpeg(&scaled)?;
+        // Hyprland reports physical pixels for width/height. The logical
+        // (compositor) size used for window positioning is physical / scale.
+        let logical_width = width / scale;
+        let logical_height = height / scale;
 
-    Ok(CaptureResult {
-        screenshots: vec![ScreenshotForClaude {
-            jpeg_data,
-            label: format!("screen 1 of 1 ({}x{} pixels)", sw, sh),
-        }],
-        display_infos: vec![DisplayInfo {
-            screen_number: 1,
-            global_origin_x: 0.0,
-            global_origin_y: 0.0,
-            display_width_points: orig_w as f64,
-            display_height_points: orig_h as f64,
+        result.push(WlrMonitorInfo {
+            name,
+            x,
+            y,
+            width: logical_width,
+            height: logical_height,
+            scale,
+        });
+    }
+
+    Some(result)
+}
+
+/// Parses swaymsg get_outputs JSON.
+fn parse_sway_monitors(stdout: &[u8]) -> Option<Vec<WlrMonitorInfo>> {
+    let json: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let outputs = json.as_array()?;
+
+    let mut result = Vec::new();
+    for output in outputs {
+        if !output["active"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let name = output["name"].as_str().unwrap_or("").to_string();
+        let rect = &output["rect"];
+        let x = rect["x"].as_f64().unwrap_or(0.0);
+        let y = rect["y"].as_f64().unwrap_or(0.0);
+        let width = rect["width"].as_f64().unwrap_or(1920.0);
+        let height = rect["height"].as_f64().unwrap_or(1080.0);
+        let scale = output["scale"].as_f64().unwrap_or(1.0);
+
+        result.push(WlrMonitorInfo {
+            name,
+            x,
+            y,
+            width: width / scale,
+            height: height / scale,
+            scale,
+        });
+    }
+
+    Some(result)
+}
+
+/// Capture each monitor individually using grim -o <output_name>.
+/// Uses hyprctl/swaymsg to get accurate logical monitor dimensions
+/// so coordinate mapping works correctly.
+fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
+    let monitors = query_wlr_monitors()
+        .ok_or_else(|| ScreenshotError::CaptureError("Cannot query monitors via hyprctl/swaymsg".into()))?;
+
+    if monitors.is_empty() {
+        return Err(ScreenshotError::NoMonitors);
+    }
+
+    let total = monitors.len();
+    let mut screenshots = Vec::with_capacity(total);
+    let mut display_infos = Vec::with_capacity(total);
+
+    for (i, monitor) in monitors.iter().enumerate() {
+        let screen_num = (i + 1) as u32;
+
+        // Capture this specific output
+        let output = std::process::Command::new("grim")
+            .arg("-o").arg(&monitor.name)
+            .arg("-t").arg("png")
+            .arg("-")
+            .output()
+            .map_err(|e| ScreenshotError::CaptureError(format!("grim not found: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ScreenshotError::CaptureError(format!(
+                "grim failed for output {}: {}", monitor.name, stderr
+            )));
+        }
+
+        let img = image::load_from_memory_with_format(&output.stdout, image::ImageFormat::Png)
+            .map_err(|e| ScreenshotError::CaptureError(format!("Failed to decode grim output: {}", e)))?
+            .to_rgba8();
+
+        log::info!("grim captured {}: {}x{} pixels (logical {}x{})",
+            monitor.name, img.width(), img.height(), monitor.width, monitor.height);
+
+        let scaled = scale_image(&img);
+        let (sw, sh) = (scaled.width(), scaled.height());
+        let jpeg_data = encode_jpeg(&scaled)?;
+
+        let is_cursor_display = cursor_x as f64 >= monitor.x
+            && (cursor_x as f64) < monitor.x + monitor.width
+            && cursor_y as f64 >= monitor.y
+            && (cursor_y as f64) < monitor.y + monitor.height;
+
+        let label = if total == 1 {
+            format!("screen 1 of 1 ({}x{} pixels)", sw, sh)
+        } else if is_cursor_display {
+            format!(
+                "screen {} of {} ({}x{} pixels) — cursor is on this screen (primary focus)",
+                screen_num, total, sw, sh
+            )
+        } else {
+            format!(
+                "screen {} of {} ({}x{} pixels) — secondary screen",
+                screen_num, total, sw, sh
+            )
+        };
+
+        screenshots.push(ScreenshotForClaude { jpeg_data, label });
+        // display_width/height_points = LOGICAL size (what the compositor uses
+        // for window positioning). This is what the overlay coordinate space uses.
+        // screenshot_width/height_pixels = the JPEG dimensions sent to Claude.
+        // The coordinate mapper scales from screenshot pixels → logical points.
+        display_infos.push(DisplayInfo {
+            screen_number: screen_num,
+            global_origin_x: monitor.x,
+            global_origin_y: monitor.y,
+            display_width_points: monitor.width,
+            display_height_points: monitor.height,
             screenshot_width_pixels: sw,
             screenshot_height_pixels: sh,
-            is_cursor_display: true,
-        }],
-    })
+            is_cursor_display,
+        });
+    }
+
+    log::info!("Screenshot captured: {} screen(s), cursor on screen {}",
+        total,
+        display_infos.iter().find(|d| d.is_cursor_display).map_or(0, |d| d.screen_number)
+    );
+
+    Ok(CaptureResult { screenshots, display_infos })
+}
+
+/// Queries the primary monitor's logical dimensions for overlay window sizing.
+/// Falls back to 1920x1080 if detection fails.
+pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
+    // Try wlroots monitor query first (Hyprland/Sway)
+    if platform.display_server == Some(DisplayServer::Wayland) {
+        if let Some(monitors) = query_wlr_monitors() {
+            if let Some(primary) = monitors.first() {
+                let w = primary.width as i32;
+                let h = primary.height as i32;
+                log::info!("Detected screen size: {}x{} (from {})", w, h, primary.name);
+                return (w, h);
+            }
+        }
+    }
+
+    // Try xcap for X11/other
+    if let Ok(monitors) = xcap::Monitor::all() {
+        if let Some(m) = monitors.first() {
+            let w = m.width().unwrap_or(1920) as i32;
+            let h = m.height().unwrap_or(1080) as i32;
+            log::info!("Detected screen size: {}x{} (from xcap)", w, h);
+            return (w, h);
+        }
+    }
+
+    log::warn!("Could not detect screen size, defaulting to 1920x1080");
+    (1920, 1080)
 }
 
 /// Capture using xcap (cross-platform).
