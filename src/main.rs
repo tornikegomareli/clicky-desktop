@@ -494,19 +494,20 @@ async fn run_llm_pipeline(
     ui_tx: std_mpsc::Sender<UiEvent>,
 ) {
     // Capture screenshots (blocking — JPEG encoding is CPU-bound)
-    // Falls back to text-only if screenshot capture isn't available (e.g. Wayland VM)
     let (cx, cy) = cursor_position;
     let capture = match tokio::task::spawn_blocking(move || {
         screenshot::capture_all_screens(cx, cy)
     }).await {
-        Ok(Ok(c)) => Some(c),
+        Ok(Ok(c)) => c,
         Ok(Err(e)) => {
-            log::warn!("Screenshot unavailable ({}), sending text-only to LLM", e);
-            None
+            log::error!("Screenshot failed: {} — cannot send to LLM without screen context", e);
+            let _ = ui_tx.send(UiEvent::ClaudeError(format!("Screenshot failed: {}", e)));
+            return;
         }
         Err(e) => {
-            log::warn!("Screenshot task failed ({}), sending text-only to LLM", e);
-            None
+            log::error!("Screenshot task panicked: {}", e);
+            let _ = ui_tx.send(UiEvent::ClaudeError("Screenshot task failed".into()));
+            return;
         }
     };
 
@@ -517,16 +518,11 @@ async fn run_llm_pipeline(
         messages.push(serde_json::json!({"role": "assistant", "content": assistant_text}));
     }
 
-    // Call the appropriate LLM provider
     let system_prompt = api::claude::COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT;
 
     let result: Result<String, String> = match provider {
         LlmProvider::Anthropic | LlmProvider::WorkerProxy => {
-            let user_content = if let Some(ref cap) = capture {
-                api::claude::build_vision_message_content(&transcript, &cap.screenshots)
-            } else {
-                serde_json::json!(transcript)
-            };
+            let user_content = api::claude::build_vision_message_content(&transcript, &capture.screenshots);
             messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
             let model = api::claude::DEFAULT_CLAUDE_MODEL;
@@ -540,11 +536,7 @@ async fn run_llm_pipeline(
             ).await.map_err(|e| e.to_string())
         }
         LlmProvider::OpenAi => {
-            let user_content = if let Some(ref cap) = capture {
-                api::openai::build_vision_message_content(&transcript, &cap.screenshots)
-            } else {
-                serde_json::json!(transcript)
-            };
+            let user_content = api::openai::build_vision_message_content(&transcript, &capture.screenshots);
             messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
             let model = api::openai::DEFAULT_OPENAI_MODEL;
@@ -573,7 +565,7 @@ async fn run_llm_pipeline(
             let _ = ui_tx.send(UiEvent::ClaudeResponse {
                 spoken_text: parsed.spoken_text,
                 pointing_instruction: pointing,
-                display_infos: capture.as_ref().map_or(vec![], |c| c.display_infos.clone()),
+                display_infos: capture.display_infos.clone(),
             });
         }
         Err(e) => {

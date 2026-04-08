@@ -33,6 +33,9 @@ impl fmt::Display for ScreenshotError {
 
 /// Captures all monitors, scales to max 1280px width, encodes as JPEG.
 /// Labels each screenshot with cursor/secondary designation.
+///
+/// On Wayland where xcap's default capture fails (e.g. GNOME without wlr-screencopy),
+/// falls back to X11 capture via XWayland by temporarily unsetting WAYLAND_DISPLAY.
 pub fn capture_all_screens(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
     let monitors = xcap::Monitor::all()
         .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
@@ -58,10 +61,40 @@ pub fn capture_all_screens(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult
             && cursor_y >= mon_y
             && cursor_y < mon_y + mon_h;
 
-        // Capture
-        let img = monitor
-            .capture_image()
-            .map_err(|e| ScreenshotError::CaptureError(format!("Monitor {}: {}", screen_num, e)))?;
+        // Capture — try normally first, fall back to X11 if Wayland capture fails
+        let img = match monitor.capture_image() {
+            Ok(img) => img,
+            Err(e) => {
+                log::debug!("Wayland capture failed ({}), trying X11 fallback", e);
+                // Temporarily pretend we're on X11 so xcap uses the xorg path
+                let saved = std::env::var("XDG_SESSION_TYPE").ok();
+                std::env::set_var("XDG_SESSION_TYPE", "x11");
+                let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+                if wayland_display.is_some() {
+                    std::env::remove_var("WAYLAND_DISPLAY");
+                }
+
+                // Re-enumerate monitors with X11 and capture
+                let x11_result = xcap::Monitor::all()
+                    .and_then(|mons| {
+                        mons.get(i)
+                            .ok_or_else(|| xcap::XCapError::new(&format!("No X11 monitor {}", i)))
+                            .and_then(|m| m.capture_image())
+                    });
+
+                // Restore env
+                if let Some(val) = saved {
+                    std::env::set_var("XDG_SESSION_TYPE", val);
+                }
+                if let Some(val) = wayland_display {
+                    std::env::set_var("WAYLAND_DISPLAY", val);
+                }
+
+                x11_result.map_err(|e2| ScreenshotError::CaptureError(
+                    format!("Monitor {}: Wayland and X11 capture both failed: {}", screen_num, e2)
+                ))?
+            }
+        };
 
         // Scale if wider than MAX_WIDTH
         let (orig_w, orig_h) = (img.width(), img.height());
