@@ -377,9 +377,12 @@ pub fn create_overlay_window(
         .transparent()
         .build();
 
-    // Set topmost after init (not available on the builder)
+    // Set topmost + mouse passthrough (GLFW handles X11 input shape correctly)
     unsafe {
-        raylib::ffi::SetWindowState(raylib::ffi::ConfigFlags::FLAG_WINDOW_TOPMOST as u32);
+        raylib::ffi::SetWindowState(
+            raylib::ffi::ConfigFlags::FLAG_WINDOW_TOPMOST as u32
+                | raylib::ffi::ConfigFlags::FLAG_WINDOW_MOUSE_PASSTHROUGH as u32,
+        );
     }
 
     raylib_handle.set_target_fps(60);
