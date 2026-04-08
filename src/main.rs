@@ -7,6 +7,7 @@ mod panel;
 mod hotkey;
 mod audio;
 mod screenshot;
+mod cursor_tracker;
 
 use app::state_machine::{VoiceState, VoiceStateTransition};
 use hotkey::PushToTalkTransition;
@@ -19,6 +20,12 @@ fn main() {
 
     let platform = app::platform::detect();
     info!("Clicky Desktop starting on {}", platform);
+
+    // Initialize GTK (required on Linux for tray-icon's menu system)
+    #[cfg(target_os = "linux")]
+    {
+        gtk::init().expect("Failed to initialize GTK");
+    }
 
     // Initialize system tray icon
     let tray_icon = match tray::ClickyTrayIcon::new() {
@@ -46,7 +53,12 @@ fn main() {
 
     // Create the overlay window (transparent, undecorated, topmost)
     // TODO: Detect actual screen size instead of hardcoded 1920x1080
-    let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(1920, 1080);
+    let screen_w = 1920;
+    let screen_h = 1080;
+    let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(screen_w, screen_h);
+
+    // Create platform-appropriate cursor tracker
+    let cursor_tracker = cursor_tracker::create(&platform, screen_w, screen_h);
 
     // Initialize overlay render state
     let mut render_state = OverlayRenderState::new();
@@ -54,8 +66,11 @@ fn main() {
 
     info!("Entering main render loop at 60fps");
 
+    let mut frame_count: u64 = 0;
+
     // Main render loop — runs at 60fps
     while !raylib_handle.window_should_close() {
+        frame_count += 1;
         let delta_seconds = raylib_handle.get_frame_time() as f64;
 
         // Poll system tray menu events
@@ -105,11 +120,23 @@ fn main() {
             }
         }
 
-        // Update cursor position from mouse (when following mouse)
+        // Update cursor position
         if render_state.navigation_mode == CursorNavigationMode::FollowingMouse {
+            // Feed Raylib's mouse position (used by fallback tracker on X11)
             let mouse_position = raylib_handle.get_mouse_position();
-            render_state.cursor_x = mouse_position.x;
-            render_state.cursor_y = mouse_position.y;
+            cursor_tracker.update_from_window(mouse_position.x, mouse_position.y);
+
+            let (mx, my) = cursor_tracker.get_position();
+            render_state.cursor_x = mx;
+            render_state.cursor_y = my;
+
+            if frame_count % 60 == 0 {
+                info!(
+                    "Mouse -> triangle: ({:.0}, {:.0}) | mode: {:?}",
+                    render_state.cursor_x, render_state.cursor_y,
+                    render_state.navigation_mode
+                );
+            }
         }
 
         // Advance flight animation if active
