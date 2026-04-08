@@ -10,12 +10,12 @@ pub enum UiEvent {
     PartialTranscript(String),
     FinalTranscript(String),
     TranscriptionError(String),
-    ClaudeResponse {
+    LlmResponse {
         spoken_text: String,
         pointing_instruction: Option<PointingInstruction>,
         display_infos: Vec<DisplayInfo>,
     },
-    ClaudeError(String),
+    PipelineError(String),
 }
 
 /// Audio subsystem errors. All are recoverable — the app continues without audio.

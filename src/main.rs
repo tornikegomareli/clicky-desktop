@@ -292,7 +292,7 @@ fn main() {
                     render_state.voice_state = voice_state;
                     processing_since = None;
                 }
-                UiEvent::ClaudeResponse { spoken_text, pointing_instruction, display_infos } => {
+                UiEvent::LlmResponse { spoken_text, pointing_instruction, display_infos } => {
                     if voice_state != VoiceState::Processing {
                         continue;
                     }
@@ -335,8 +335,8 @@ fn main() {
                     claude_pipeline_active = false;
                     processing_since = None;
                 }
-                UiEvent::ClaudeError(err) => {
-                    log::error!("Claude error: {}", err);
+                UiEvent::PipelineError(err) => {
+                    log::error!("Pipeline error: {}", err);
                     voice_state = VoiceState::Idle;
                     render_state.voice_state = voice_state;
                     processing_since = None;
@@ -501,12 +501,12 @@ async fn run_llm_pipeline(
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
             log::error!("Screenshot failed: {} — cannot send to LLM without screen context", e);
-            let _ = ui_tx.send(UiEvent::ClaudeError(format!("Screenshot failed: {}", e)));
+            let _ = ui_tx.send(UiEvent::PipelineError(format!("Screenshot failed: {}", e)));
             return;
         }
         Err(e) => {
             log::error!("Screenshot task panicked: {}", e);
-            let _ = ui_tx.send(UiEvent::ClaudeError("Screenshot task failed".into()));
+            let _ = ui_tx.send(UiEvent::PipelineError("Screenshot task failed".into()));
             return;
         }
     };
@@ -562,7 +562,7 @@ async fn run_llm_pipeline(
                 screen_number: p.screen_number,
             });
 
-            let _ = ui_tx.send(UiEvent::ClaudeResponse {
+            let _ = ui_tx.send(UiEvent::LlmResponse {
                 spoken_text: parsed.spoken_text,
                 pointing_instruction: pointing,
                 display_infos: capture.display_infos.clone(),
@@ -570,7 +570,7 @@ async fn run_llm_pipeline(
         }
         Err(e) => {
             log::error!("LLM API error: {}", e);
-            let _ = ui_tx.send(UiEvent::ClaudeError(e.to_string()));
+            let _ = ui_tx.send(UiEvent::PipelineError(e.to_string()));
         }
     }
 }
