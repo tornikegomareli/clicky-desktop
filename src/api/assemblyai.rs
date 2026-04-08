@@ -293,6 +293,18 @@ impl StreamingTranscriptionSession {
     pub async fn cancel(&self) {
         let _ = self.control_sender.send(ControlMessage::Cancel).await;
     }
+
+    /// Returns a clone of the audio sender for use in a separate task.
+    pub fn audio_sender(&self) -> mpsc::Sender<Vec<u8>> {
+        self.audio_sender.clone()
+    }
+
+    /// Takes the transcript receiver out of the session.
+    /// After calling this, transcript_receiver is replaced with a dummy channel.
+    pub fn take_transcript_receiver(&mut self) -> mpsc::Receiver<TranscriptUpdate> {
+        let (_dummy_tx, dummy_rx) = mpsc::channel(1);
+        std::mem::replace(&mut self.transcript_receiver, dummy_rx)
+    }
 }
 
 /// Composes a full transcript from all stored turns in order.
