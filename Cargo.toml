@@ -23,13 +23,14 @@ futures-util = "0.3"
 log = "0.4"
 env_logger = "0.11"
 base64 = "0.22"
-raylib = "5"
+raylib = { version = "5", features = ["opengl_21"] }
 tray-icon = "0.19"
 global-hotkey = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
 x11rb = { version = "0.13", features = ["xfixes"] }
+gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [

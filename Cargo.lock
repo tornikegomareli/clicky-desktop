@@ -348,6 +348,7 @@ dependencies = [
  "evdev",
  "futures-util",
  "global-hotkey",
+ "gtk",
  "image",
  "log",
  "raylib",
