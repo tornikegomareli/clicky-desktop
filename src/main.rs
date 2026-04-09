@@ -232,6 +232,10 @@ fn main() {
             if let Ok(tracker) = rms_tracker.lock() {
                 render_state.audio_power_history = tracker.history().to_vec();
                 render_state.audio_power_level = tracker.current_level();
+
+                if frame_count % 30 == 0 {
+                    info!("Audio RMS: {:.4}", tracker.current_level());
+                }
             }
         }
 
@@ -511,6 +515,23 @@ async fn run_llm_pipeline(
             return;
         }
     };
+
+    // Debug: save screenshots to /tmp for inspection
+    for (i, screenshot) in capture.screenshots.iter().enumerate() {
+        let path = format!("/tmp/clicky_debug_screenshot_{}.jpg", i);
+        if let Err(e) = std::fs::write(&path, &screenshot.jpeg_data) {
+            log::warn!("Failed to save debug screenshot: {}", e);
+        } else {
+            info!("Debug screenshot saved: {} (label: {})", path, screenshot.label);
+        }
+    }
+    for (i, display) in capture.display_infos.iter().enumerate() {
+        info!("Debug display {}: origin=({},{}) size={}x{} screenshot={}x{} cursor={}",
+            i, display.global_origin_x, display.global_origin_y,
+            display.display_width_points, display.display_height_points,
+            display.screenshot_width_pixels, display.screenshot_height_pixels,
+            display.is_cursor_display);
+    }
 
     // Build messages with conversation history
     let mut messages = Vec::new();
