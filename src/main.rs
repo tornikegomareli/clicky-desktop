@@ -146,6 +146,7 @@ fn main() {
 
     // Initialize overlay render state
     let mut render_state = OverlayRenderState::new();
+    render_state.bubble_font = renderer::load_bubble_font(&mut raylib_handle, &raylib_thread);
     let mut voice_state = VoiceState::Idle;
 
     info!("Entering main render loop at 60fps");
@@ -155,6 +156,7 @@ fn main() {
     let mut processing_since: Option<std::time::Instant> = None;
     let mut claude_pipeline_active = false;
     let mut responding_since: Option<std::time::Instant> = None;
+    let mut pointing_hold_since: Option<std::time::Instant> = None;
 
     // Main render loop — runs at 60fps
     while !raylib_handle.window_should_close() {
@@ -197,6 +199,7 @@ fn main() {
                             }
                             claude_pipeline_active = false;
                             responding_since = None;
+                            pointing_hold_since = None;
 
                             // Stop TTS playback if active
                             if let Some(ref mut player) = audio_player {
@@ -376,8 +379,10 @@ fn main() {
                         }
                     }
 
-                    // Set speech bubble text
-                    render_state.speech_bubble_text = spoken_text;
+                    // Set friendly bubble phrase (full response goes to TTS voice)
+                    let is_pointing = computer_use_global_coordinate.is_some()
+                        || pointing_instruction.is_some();
+                    render_state.speech_bubble_text = core::bubble_text::pick_bubble_phrase(is_pointing);
                     render_state.speech_bubble_visible_char_count = render_state.speech_bubble_text.len();
                     render_state.speech_bubble_opacity = 1.0;
 
@@ -426,24 +431,53 @@ fn main() {
             }
         }
 
-        // Responding → Idle after TTS finishes + flight complete
+        // Responding → hold at target → return flight → Idle
         if voice_state == VoiceState::Responding {
             let now = std::time::Instant::now();
             let since = responding_since.get_or_insert(now);
-            let elapsed = now.duration_since(*since).as_secs();
-            let flight_done = render_state.navigation_mode != CursorNavigationMode::NavigatingToTarget;
+            let elapsed_total = now.duration_since(*since).as_secs();
             let tts_done = audio_player.as_ref().map_or(true, |p| !p.is_playing());
 
-            // Wait for TTS audio to finish AND flight animation complete.
-            // Minimum 1 second so speech bubble is visible even for short responses.
-            // Safety timeout at 30 seconds to prevent getting stuck.
-            if (tts_done && flight_done && elapsed >= 1) || elapsed >= 30 {
+            match render_state.navigation_mode {
+                CursorNavigationMode::NavigatingToTarget => {
+                    // Still flying to target — wait
+                }
+                CursorNavigationMode::PointingAtTarget => {
+                    // At target — hold for 2 seconds after TTS finishes, then return
+                    if tts_done {
+                        let hold_since = pointing_hold_since.get_or_insert(now);
+                        let hold_elapsed = now.duration_since(*hold_since).as_secs_f64();
+                        if hold_elapsed >= 2.0 {
+                            let mouse_pos = cursor_tracker.get_position();
+                            render_state.start_return_flight(mouse_pos.0, mouse_pos.1);
+                            pointing_hold_since = None;
+                        }
+                    }
+                }
+                CursorNavigationMode::ReturningToMouse => {
+                    // Flying back — wait for return flight to complete (handled by advance_flight_animation)
+                }
+                CursorNavigationMode::FollowingMouse => {
+                    // Return flight completed → transition to Idle
+                    if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseComplete) {
+                        voice_state = new_state;
+                        render_state.voice_state = voice_state;
+                    }
+                    responding_since = None;
+                    pointing_hold_since = None;
+                }
+            }
+
+            // Safety timeout at 45 seconds
+            if elapsed_total >= 45 {
+                log::warn!("Responding safety timeout — returning to Idle");
                 if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseComplete) {
                     voice_state = new_state;
                     render_state.voice_state = voice_state;
                     render_state.return_to_following_mouse();
                 }
                 responding_since = None;
+                pointing_hold_since = None;
             }
         }
 
@@ -457,8 +491,10 @@ fn main() {
             render_state.cursor_y = my;
         }
 
-        // Advance flight animation if active
-        if render_state.navigation_mode == CursorNavigationMode::NavigatingToTarget {
+        // Advance flight animation if active (forward or return)
+        if render_state.navigation_mode == CursorNavigationMode::NavigatingToTarget
+            || render_state.navigation_mode == CursorNavigationMode::ReturningToMouse
+        {
             render_state.advance_flight_animation(delta_seconds);
         }
 
