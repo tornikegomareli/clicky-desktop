@@ -9,6 +9,10 @@ pub struct GlobalHotkeyManager {
     _manager: CrateManager,
 }
 
+// Safety: GlobalHotKeyManager is only accessed from the main thread.
+// The raw pointer inside (platform window handle) is not mutated across threads.
+unsafe impl Send for GlobalHotkeyManager {}
+
 impl GlobalHotkeyManager {
     pub fn new() -> Result<Self, String> {
         let manager = CrateManager::new()

@@ -9,7 +9,8 @@ impl CursorTracker for Win32CursorTracker {
     fn get_position(&self) -> (f32, f32) {
         #[cfg(target_os = "windows")]
         {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, POINT};
+            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
             let mut point = POINT { x: 0, y: 0 };
             unsafe {
                 GetCursorPos(&mut point);
