@@ -191,8 +191,9 @@ fn draw_cursor_triangle(
     draw_handle: &mut RaylibDrawHandle,
     render_state: &OverlayRenderState,
 ) {
-    let center_x = render_state.cursor_x;
-    let center_y = render_state.cursor_y;
+    // Offset the triangle from the system cursor so they don't overlap
+    let center_x = render_state.cursor_x + 20.0;
+    let center_y = render_state.cursor_y + 20.0;
     let size = design_system::cursor::TRIANGLE_SIZE * render_state.cursor_scale as f32;
     let rotation_radians = render_state.cursor_rotation_degrees.to_radians() as f32;
 
