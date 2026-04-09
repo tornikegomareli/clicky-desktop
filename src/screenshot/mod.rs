@@ -68,33 +68,45 @@ pub fn capture_all_screens(
 /// The portal screenshot flash is an animation effect — disabling animations
 /// via gsettings suppresses it entirely.
 fn capture_gnome_no_flash(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
-    // Check current animation state
-    let was_enabled = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+    // Save current state
+    let animations_on = gsettings_get_bool("org.gnome.desktop.interface", "enable-animations");
+    let sounds_on = gsettings_get_bool("org.gnome.desktop.sound", "event-sounds");
+
+    // Suppress flash (animation) and shutter sound before capture
+    if animations_on {
+        gsettings_set("org.gnome.desktop.interface", "enable-animations", "false");
+    }
+    if sounds_on {
+        gsettings_set("org.gnome.desktop.sound", "event-sounds", "false");
+    }
+
+    let result = capture_with_xcap(cursor_x, cursor_y);
+
+    // Restore
+    if animations_on {
+        gsettings_set("org.gnome.desktop.interface", "enable-animations", "true");
+    }
+    if sounds_on {
+        gsettings_set("org.gnome.desktop.sound", "event-sounds", "true");
+    }
+
+    result
+}
+
+fn gsettings_get_bool(schema: &str, key: &str) -> bool {
+    std::process::Command::new("gsettings")
+        .args(["get", schema, key])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim() == "true")
-        .unwrap_or(true);
+        .unwrap_or(true)
+}
 
-    // Disable animations before capture
-    if was_enabled {
-        let _ = std::process::Command::new("gsettings")
-            .args(["set", "org.gnome.desktop.interface", "enable-animations", "false"])
-            .output();
-    }
-
-    // Capture
-    let result = capture_with_xcap(cursor_x, cursor_y);
-
-    // Restore animations
-    if was_enabled {
-        let _ = std::process::Command::new("gsettings")
-            .args(["set", "org.gnome.desktop.interface", "enable-animations", "true"])
-            .output();
-    }
-
-    result
+fn gsettings_set(schema: &str, key: &str, value: &str) {
+    let _ = std::process::Command::new("gsettings")
+        .args(["set", schema, key, value])
+        .output();
 }
 
 /// Monitor geometry from hyprctl/swaymsg, used for accurate coordinate mapping.
