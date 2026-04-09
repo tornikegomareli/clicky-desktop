@@ -90,4 +90,8 @@ pub mod cursor {
 
     /// Glow shadow radius during pointing animation
     pub const GLOW_RADIUS_POINTING: f32 = 22.0;
+
+    /// Offset from logical position to avoid overlapping the system cursor.
+    /// Flight targets must subtract this so the visual lands on the correct spot.
+    pub const OFFSET_FROM_SYSTEM_CURSOR: f32 = 20.0;
 }

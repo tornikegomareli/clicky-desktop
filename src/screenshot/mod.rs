@@ -265,7 +265,8 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
         log::info!("grim captured {}: {}x{} pixels (logical {}x{})",
             monitor.name, img.width(), img.height(), monitor.width, monitor.height);
 
-        let scaled = scale_image(&img);
+        let mut scaled = scale_image(&img);
+        draw_coordinate_grid(&mut scaled);
         let (sw, sh) = (scaled.width(), scaled.height());
         let jpeg_data = encode_jpeg(&scaled)?;
 
@@ -376,7 +377,8 @@ fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
             .capture_image()
             .map_err(|e| ScreenshotError::CaptureError(format!("Monitor {}: {}", screen_num, e)))?;
 
-        let scaled = scale_image(&img);
+        let mut scaled = scale_image(&img);
+        draw_coordinate_grid(&mut scaled);
         let (sw, sh) = (scaled.width(), scaled.height());
         let jpeg_data = encode_jpeg(&scaled)?;
 
@@ -422,6 +424,101 @@ fn scale_image(img: &image::RgbaImage) -> image::RgbaImage {
         image::imageops::resize(img, MAX_WIDTH, new_h, FilterType::Lanczos3)
     } else {
         img.clone()
+    }
+}
+
+/// Draws a subtle coordinate grid on the screenshot to help the LLM
+/// estimate coordinates more precisely. Lines every 200px with labels.
+fn draw_coordinate_grid(img: &mut image::RgbaImage) {
+    let grid_enabled = std::env::var("CLICKY_GRID_OVERLAY")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if !grid_enabled {
+        return;
+    }
+
+    let (w, h) = (img.width(), img.height());
+    let line_color = image::Rgba([255, 0, 0, 50]); // semi-transparent red
+    let label_color = image::Rgba([255, 0, 0, 160]); // more opaque for text
+
+    // Draw grid lines every 200px
+    for x in (200..w).step_by(200) {
+        for y in 0..h {
+            blend_pixel(img, x, y, line_color);
+        }
+    }
+    for y in (200..h).step_by(200) {
+        for x in 0..w {
+            blend_pixel(img, x, y, line_color);
+        }
+    }
+
+    // Label intersections with coordinates
+    for gx in (200..w).step_by(200) {
+        for gy in (200..h).step_by(200) {
+            let label = format!("{},{}", gx, gy);
+            draw_tiny_text(img, gx + 2, gy + 2, &label, label_color);
+        }
+    }
+    // Label edges (x axis at top, y axis at left)
+    for gx in (200..w).step_by(200) {
+        draw_tiny_text(img, gx + 2, 2, &format!("{}", gx), label_color);
+    }
+    for gy in (200..h).step_by(200) {
+        draw_tiny_text(img, 2, gy + 2, &format!("{}", gy), label_color);
+    }
+}
+
+/// Blend a semi-transparent pixel onto the image.
+fn blend_pixel(img: &mut image::RgbaImage, x: u32, y: u32, color: image::Rgba<u8>) {
+    if x >= img.width() || y >= img.height() {
+        return;
+    }
+    let bg = img.get_pixel(x, y);
+    let alpha = color[3] as f32 / 255.0;
+    let inv = 1.0 - alpha;
+    let blended = image::Rgba([
+        (color[0] as f32 * alpha + bg[0] as f32 * inv) as u8,
+        (color[1] as f32 * alpha + bg[1] as f32 * inv) as u8,
+        (color[2] as f32 * alpha + bg[2] as f32 * inv) as u8,
+        255,
+    ]);
+    img.put_pixel(x, y, blended);
+}
+
+/// Minimal 3x5 bitmap font for digits and comma — no dependencies needed.
+fn draw_tiny_text(img: &mut image::RgbaImage, x: u32, y: u32, text: &str, color: image::Rgba<u8>) {
+    // 3x5 pixel bitmaps for 0-9 and comma (each row is 3 bits, MSB left)
+    const GLYPHS: &[(char, [u8; 5])] = &[
+        ('0', [0b111, 0b101, 0b101, 0b101, 0b111]),
+        ('1', [0b010, 0b110, 0b010, 0b010, 0b111]),
+        ('2', [0b111, 0b001, 0b111, 0b100, 0b111]),
+        ('3', [0b111, 0b001, 0b111, 0b001, 0b111]),
+        ('4', [0b101, 0b101, 0b111, 0b001, 0b001]),
+        ('5', [0b111, 0b100, 0b111, 0b001, 0b111]),
+        ('6', [0b111, 0b100, 0b111, 0b101, 0b111]),
+        ('7', [0b111, 0b001, 0b001, 0b001, 0b001]),
+        ('8', [0b111, 0b101, 0b111, 0b101, 0b111]),
+        ('9', [0b111, 0b101, 0b111, 0b001, 0b111]),
+        (',', [0b000, 0b000, 0b000, 0b010, 0b100]),
+    ];
+
+    let mut cx = x;
+    for ch in text.chars() {
+        if let Some((_, bitmap)) = GLYPHS.iter().find(|(c, _)| *c == ch) {
+            for (row, bits) in bitmap.iter().enumerate() {
+                for col in 0..3u32 {
+                    if bits & (0b100 >> col) != 0 {
+                        let px = cx + col;
+                        let py = y + row as u32;
+                        if px < img.width() && py < img.height() {
+                            img.put_pixel(px, py, color);
+                        }
+                    }
+                }
+            }
+        }
+        cx += 4; // 3px glyph + 1px gap
     }
 }
 

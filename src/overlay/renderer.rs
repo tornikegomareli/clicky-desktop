@@ -127,13 +127,16 @@ impl OverlayRenderState {
     }
 
     /// Starts a bezier flight from the current cursor position to a target.
+    /// Compensates for the visual rendering offset so the triangle lands
+    /// on the exact screen coordinate.
     pub fn start_flight_to(&mut self, target_x: f64, target_y: f64, bubble_text: String) {
+        let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR as f64;
         self.navigation_mode = CursorNavigationMode::NavigatingToTarget;
         self.active_flight = Some(ActiveFlightAnimation::new(
             self.cursor_x as f64,
             self.cursor_y as f64,
-            target_x,
-            target_y,
+            target_x - offset,
+            target_y - offset,
         ));
         self.speech_bubble_text = bubble_text;
         self.speech_bubble_visible_char_count = 0;
@@ -192,8 +195,9 @@ fn draw_cursor_triangle(
     render_state: &OverlayRenderState,
 ) {
     // Offset the triangle from the system cursor so they don't overlap
-    let center_x = render_state.cursor_x + 20.0;
-    let center_y = render_state.cursor_y + 20.0;
+    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
+    let center_x = render_state.cursor_x + offset;
+    let center_y = render_state.cursor_y + offset;
     let size = design_system::cursor::TRIANGLE_SIZE * render_state.cursor_scale as f32;
     let rotation_radians = render_state.cursor_rotation_degrees.to_radians() as f32;
 
