@@ -6,3 +6,4 @@ pub mod wav_builder;
 pub mod pcm16_converter;
 pub mod conversation;
 pub mod design_system;
+pub mod bubble_text;
