@@ -386,6 +386,31 @@ pub fn create_overlay_window(
         );
     }
 
+    // Windows: hide from taskbar and Alt+Tab by setting WS_EX_TOOLWINDOW.
+    // Must hide → change style → show, because Windows caches the taskbar
+    // button state when the window is first displayed.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, ShowWindow, GWL_EXSTYLE,
+            WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_TOPMOST,
+            SW_HIDE, SW_SHOWNOACTIVATE,
+        };
+        let hwnd = raylib::ffi::GetWindowHandle();
+        // Hide first so the taskbar button is removed
+        ShowWindow(hwnd, SW_HIDE);
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        SetWindowLongW(
+            hwnd,
+            GWL_EXSTYLE,
+            ex_style | WS_EX_TOOLWINDOW as i32 | WS_EX_LAYERED as i32
+                     | WS_EX_TRANSPARENT as i32 | WS_EX_TOPMOST as i32,
+        );
+        // Show again without activating (no focus steal)
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        log::info!("Windows overlay: set WS_EX_TOOLWINDOW (hidden from taskbar)");
+    }
+
     raylib_handle.set_target_fps(60);
 
     (raylib_handle, raylib_thread)
