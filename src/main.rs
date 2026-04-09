@@ -57,10 +57,10 @@ fn main() {
     let mut active_session_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
     // API configuration
-    let assemblyai_api_key = std::env::var("ASSEMBLYAI_API_KEY").ok();
-    let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-    let openai_api_key = std::env::var("OPENAI_API_KEY").ok();
-    let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok();
+    let assemblyai_api_key = std::env::var("ASSEMBLYAI_API_KEY").ok().filter(|s| !s.is_empty());
+    let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty());
+    let openai_api_key = std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty());
+    let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok().filter(|s| !s.is_empty());
     let transcription_enabled = assemblyai_api_key.is_some() || worker_base_url.is_some();
 
     // LLM provider: Anthropic (preferred) > OpenAI > Worker proxy > disabled
