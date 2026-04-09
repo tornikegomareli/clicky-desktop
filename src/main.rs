@@ -121,7 +121,14 @@ fn main() {
 
     // Detect actual screen size for the overlay window
     let (screen_w, screen_h) = screenshot::detect_screen_size(&platform);
+    info!("Overlay window size: {}x{}", screen_w, screen_h);
+
     let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(screen_w, screen_h);
+
+    // Log actual Raylib window size (may differ from requested due to DPI scaling)
+    let actual_w = raylib_handle.get_screen_width();
+    let actual_h = raylib_handle.get_screen_height();
+    info!("Raylib actual window: {}x{} (requested {}x{})", actual_w, actual_h, screen_w, screen_h);
 
     // Create platform-appropriate cursor tracker
     let cursor_tracker = cursor_tracker::create(&platform, screen_w, screen_h);
@@ -319,14 +326,29 @@ fn main() {
 
                     // Start flight animation if pointing
                     if let Some(ref instruction) = pointing_instruction {
+                        info!("POINT tag: screenshot_pixel=({}, {}), label='{}', screen={:?}",
+                            instruction.screenshot_x, instruction.screenshot_y,
+                            instruction.label, instruction.screen_number);
+
                         let target = core::coordinate_mapper::find_target_display(
                             instruction.screen_number, &display_infos,
                         );
                         if let Some(display) = target {
+                            info!("Target display: screen={} origin=({},{}) display_points={}x{} screenshot_px={}x{}",
+                                display.screen_number,
+                                display.global_origin_x, display.global_origin_y,
+                                display.display_width_points, display.display_height_points,
+                                display.screenshot_width_pixels, display.screenshot_height_pixels);
+
                             let coord = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(
                                 instruction.screenshot_x, instruction.screenshot_y, display,
                             );
+                            info!("Mapped coordinate: ({:.1}, {:.1}) — cursor currently at ({:.1}, {:.1})",
+                                coord.x, coord.y, render_state.cursor_x, render_state.cursor_y);
+
                             render_state.start_flight_to(coord.x, coord.y, spoken_text.clone());
+                        } else {
+                            log::warn!("No matching display found for screen {:?}", instruction.screen_number);
                         }
                     }
 
@@ -518,7 +540,11 @@ async fn run_llm_pipeline(
 
     // Debug: save screenshots to /tmp for inspection
     for (i, screenshot) in capture.screenshots.iter().enumerate() {
-        let path = format!("/tmp/clicky_debug_screenshot_{}.jpg", i);
+        let path = if cfg!(target_os = "windows") {
+            format!("{}\\clicky_debug_screenshot_{}.jpg", std::env::temp_dir().display(), i)
+        } else {
+            format!("/tmp/clicky_debug_screenshot_{}.jpg", i)
+        };
         if let Err(e) = std::fs::write(&path, &screenshot.jpeg_data) {
             log::warn!("Failed to save debug screenshot: {}", e);
         } else {

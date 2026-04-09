@@ -17,6 +17,30 @@ use std::io::Cursor;
 const MAX_WIDTH: u32 = 1280;
 const JPEG_QUALITY: u8 = 80;
 
+/// Returns the DPI scale factor for the primary monitor on Windows.
+/// Falls back to 1.0 on other platforms or if detection fails.
+///
+/// IMPORTANT: On Windows, Raylib/GLFW calls SetProcessDpiAwarenessContext
+/// during init, making the process per-monitor DPI aware. After that,
+/// GetCursorPos returns physical pixels and the overlay window operates
+/// in physical pixel space. So we should NOT apply DPI scaling to
+/// coordinates — everything is already in physical pixels.
+///
+/// This function is only used for diagnostic logging.
+#[cfg(target_os = "windows")]
+fn get_windows_dpi_scale() -> f64 {
+    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+    let dpi = unsafe { GetDpiForSystem() };
+    let scale = dpi as f64 / 96.0;
+    log::info!("Windows DPI: {} (scale factor: {:.2}x — note: GLFW makes process DPI-aware, using physical pixels)", dpi, scale);
+    scale
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_windows_dpi_scale() -> f64 {
+    1.0
+}
+
 pub struct CaptureResult {
     pub screenshots: Vec<ScreenshotForClaude>,
     pub display_infos: Vec<DisplayInfo>,
@@ -251,15 +275,15 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
             && (cursor_y as f64) < monitor.y + monitor.height;
 
         let label = if total == 1 {
-            format!("screen 1 of 1 ({}x{} pixels)", sw, sh)
+            format!("screen 1 of 1 (image dimensions: {}x{} pixels)", sw, sh)
         } else if is_cursor_display {
             format!(
-                "screen {} of {} ({}x{} pixels) — cursor is on this screen (primary focus)",
+                "screen {} of {} (image dimensions: {}x{} pixels) — cursor is on this screen (primary focus)",
                 screen_num, total, sw, sh
             )
         } else {
             format!(
-                "screen {} of {} ({}x{} pixels) — secondary screen",
+                "screen {} of {} (image dimensions: {}x{} pixels) — secondary screen",
                 screen_num, total, sw, sh
             )
         };
@@ -289,7 +313,7 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
     Ok(CaptureResult { screenshots, display_infos })
 }
 
-/// Queries the primary monitor's logical dimensions for overlay window sizing.
+/// Queries the primary monitor's dimensions for overlay window sizing.
 /// Falls back to 1920x1080 if detection fails.
 pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
     // Try wlroots monitor query first (Hyprland/Sway)
@@ -319,6 +343,8 @@ pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
 }
 
 /// Capture using xcap (cross-platform).
+/// On Windows after GLFW init, the process is per-monitor DPI aware, so
+/// xcap, GetCursorPos, and the overlay window all use physical pixels.
 fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
     let monitors = xcap::Monitor::all()
         .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
@@ -326,6 +352,9 @@ fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
     if monitors.is_empty() {
         return Err(ScreenshotError::NoMonitors);
     }
+
+    // Log DPI for diagnostics (not used for coordinate conversion)
+    let _ = get_windows_dpi_scale();
 
     let total = monitors.len();
     let mut screenshots = Vec::with_capacity(total);
@@ -352,15 +381,15 @@ fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
         let jpeg_data = encode_jpeg(&scaled)?;
 
         let label = if total == 1 {
-            format!("screen 1 of 1 ({}x{} pixels)", sw, sh)
+            format!("screen 1 of 1 (image dimensions: {}x{} pixels)", sw, sh)
         } else if is_cursor_display {
             format!(
-                "screen {} of {} ({}x{} pixels) — cursor is on this screen (primary focus)",
+                "screen {} of {} (image dimensions: {}x{} pixels) — cursor is on this screen (primary focus)",
                 screen_num, total, sw, sh
             )
         } else {
             format!(
-                "screen {} of {} ({}x{} pixels) — secondary screen",
+                "screen {} of {} (image dimensions: {}x{} pixels) — secondary screen",
                 screen_num, total, sw, sh
             )
         };
