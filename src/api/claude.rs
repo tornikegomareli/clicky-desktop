@@ -9,7 +9,7 @@ use serde_json::json;
 use futures_util::StreamExt;
 use log::{error, debug};
 
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-20250514";
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
 /// The system prompt that defines Clicky's personality and behavior.
 /// Reused verbatim from CompanionManager.swift:544-577.
