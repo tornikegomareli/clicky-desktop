@@ -19,6 +19,10 @@ pub enum UiEvent {
         computer_use_global_coordinate: Option<(f64, f64)>,
     },
     PipelineError(String),
+    /// MP3 bytes received from ElevenLabs TTS, ready for playback.
+    TtsAudio(Vec<u8>),
+    /// TTS synthesis failed — caller should fall back to espeak-ng.
+    TtsError(String),
 }
 
 /// Audio subsystem errors. All are recoverable — the app continues without audio.
