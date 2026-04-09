@@ -303,7 +303,7 @@ fn main() {
                     render_state.voice_state = voice_state;
                     processing_since = None;
                 }
-                UiEvent::LlmResponse { spoken_text, pointing_instruction, display_infos } => {
+                UiEvent::LlmResponse { spoken_text, pointing_instruction, display_infos, computer_use_global_coordinate } => {
                     if voice_state != VoiceState::Processing {
                         continue;
                     }
@@ -324,8 +324,13 @@ fn main() {
                         render_state.voice_state = voice_state;
                     }
 
-                    // Start flight animation if pointing
-                    if let Some(ref instruction) = pointing_instruction {
+                    // Start flight animation — prefer Computer Use coordinates (more precise)
+                    // over POINT tag coordinates parsed from the response text.
+                    if let Some((global_x, global_y)) = computer_use_global_coordinate {
+                        info!("Using Computer Use coordinate: ({:.1}, {:.1}) — cursor at ({:.1}, {:.1})",
+                            global_x, global_y, render_state.cursor_x, render_state.cursor_y);
+                        render_state.start_flight_to(global_x, global_y, spoken_text.clone());
+                    } else if let Some(ref instruction) = pointing_instruction {
                         info!("POINT tag: screenshot_pixel=({}, {}), label='{}', screen={:?}",
                             instruction.screenshot_x, instruction.screenshot_y,
                             instruction.label, instruction.screen_number);
@@ -610,10 +615,53 @@ async fn run_llm_pipeline(
                 screen_number: p.screen_number,
             });
 
+            // Run Computer Use API for more precise coordinate detection (Claude only).
+            // Uses the cursor display's screenshot — the one the user is looking at.
+            let computer_use_global_coordinate = if matches!(provider, LlmProvider::Anthropic | LlmProvider::WorkerProxy) {
+                if let Some(cursor_display) = capture.display_infos.iter().find(|d| d.is_cursor_display) {
+                    let cursor_screenshot = capture.screenshots.iter()
+                        .zip(capture.display_infos.iter())
+                        .find(|(_, d)| d.is_cursor_display)
+                        .map(|(s, _)| s);
+
+                    if let Some(screenshot) = cursor_screenshot {
+                        info!("Running Computer Use API for precise coordinate detection...");
+                        match api::computer_use::detect_element_location(
+                            &http_client,
+                            anthropic_api_key.as_deref(),
+                            worker_base_url.as_deref(),
+                            &screenshot.jpeg_data,
+                            &transcript,
+                            cursor_display.display_width_points,
+                            cursor_display.display_height_points,
+                        ).await {
+                            Some(coord) => {
+                                // Convert display-local to global by adding display origin
+                                let global_x = cursor_display.global_origin_x + coord.display_local_x;
+                                let global_y = cursor_display.global_origin_y + coord.display_local_y;
+                                info!("Computer Use global coordinate: ({:.1}, {:.1})", global_x, global_y);
+                                Some((global_x, global_y))
+                            }
+                            None => {
+                                info!("Computer Use: no element detected, using POINT tag if available");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let _ = ui_tx.send(UiEvent::LlmResponse {
                 spoken_text: parsed.spoken_text,
                 pointing_instruction: pointing,
                 display_infos: capture.display_infos.clone(),
+                computer_use_global_coordinate,
             });
         }
         Err(e) => {

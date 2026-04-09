@@ -14,6 +14,9 @@ pub enum UiEvent {
         spoken_text: String,
         pointing_instruction: Option<PointingInstruction>,
         display_infos: Vec<DisplayInfo>,
+        /// Pre-computed global coordinate from Computer Use API (more precise than POINT tags).
+        /// When present, this takes priority over the POINT tag coordinate.
+        computer_use_global_coordinate: Option<(f64, f64)>,
     },
     PipelineError(String),
 }
