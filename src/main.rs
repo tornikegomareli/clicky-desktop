@@ -61,7 +61,10 @@ fn main() {
     let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty());
     let openai_api_key = std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty());
     let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok().filter(|s| !s.is_empty());
+    let elevenlabs_api_key = std::env::var("ELEVENLABS_API_KEY").ok().filter(|s| !s.is_empty());
+    let elevenlabs_voice_id = std::env::var("ELEVENLABS_VOICE_ID").ok().filter(|s| !s.is_empty());
     let transcription_enabled = assemblyai_api_key.is_some() || worker_base_url.is_some();
+    let tts_enabled = elevenlabs_api_key.is_some() || worker_base_url.is_some();
 
     // LLM provider: Anthropic (preferred) > OpenAI > Worker proxy > disabled
     let llm_provider = if anthropic_api_key.is_some() {
@@ -86,14 +89,22 @@ fn main() {
         info!("Transcription: via worker proxy");
     }
 
+    if !tts_enabled {
+        log::warn!("Set ELEVENLABS_API_KEY or CLICKY_WORKER_URL to enable TTS");
+    } else if elevenlabs_api_key.is_some() {
+        info!("TTS: direct ElevenLabs API");
+    } else {
+        info!("TTS: via worker proxy");
+    }
+
     // Reusable HTTP client for API calls
     let http_client = reqwest::Client::new();
 
     // Conversation history (max 10 exchanges)
     let mut conversation_history = ConversationHistory::new();
 
-    // Audio player for TTS playback (Phase 4)
-    let _audio_player = match audio::playback::AudioPlayer::new() {
+    // Audio player for TTS playback
+    let mut audio_player = match audio::playback::AudioPlayer::new() {
         Ok(player) => {
             info!("Audio output ready");
             Some(player)
@@ -186,6 +197,11 @@ fn main() {
                             }
                             claude_pipeline_active = false;
                             responding_since = None;
+
+                            // Stop TTS playback if active
+                            if let Some(ref mut player) = audio_player {
+                                player.stop();
+                            }
 
                             // Reset RMS tracker
                             if let Ok(mut tracker) = rms_tracker.lock() {
@@ -281,12 +297,15 @@ fn main() {
                         let anthro_key = anthropic_api_key.clone();
                         let oai_key = openai_api_key.clone();
                         let worker_url = worker_base_url.clone();
+                        let el_key = elevenlabs_api_key.clone();
+                        let el_voice = elevenlabs_voice_id.clone();
                         let client = http_client.clone();
                         let cursor_pos = cursor_tracker.get_position();
 
                         let plat = platform.clone();
                         tokio_rt.spawn(run_llm_pipeline(
                             client, provider, anthro_key, oai_key, worker_url,
+                            el_key, el_voice, tts_enabled,
                             transcript, cursor_pos, history, plat, ui_tx,
                         ));
                     } else {
@@ -366,6 +385,23 @@ fn main() {
                     claude_pipeline_active = false;
                     processing_since = None;
                 }
+                UiEvent::TtsAudio(mp3_bytes) => {
+                    if let Some(ref mut player) = audio_player {
+                        player.play_mp3(mp3_bytes);
+                        info!("TTS playback started");
+                    }
+                }
+                UiEvent::TtsError(err) => {
+                    log::warn!("TTS failed: {} — falling back to espeak-ng", err);
+                    let spoken = render_state.speech_bubble_text.clone();
+                    if !spoken.is_empty() {
+                        std::thread::spawn(move || {
+                            let _ = std::process::Command::new("espeak-ng")
+                                .arg(&spoken)
+                                .spawn();
+                        });
+                    }
+                }
                 UiEvent::PipelineError(err) => {
                     log::error!("Pipeline error: {}", err);
                     voice_state = VoiceState::Idle;
@@ -390,14 +426,18 @@ fn main() {
             }
         }
 
-        // Responding → Idle after speech bubble display + flight complete
+        // Responding → Idle after TTS finishes + flight complete
         if voice_state == VoiceState::Responding {
             let now = std::time::Instant::now();
             let since = responding_since.get_or_insert(now);
             let elapsed = now.duration_since(*since).as_secs();
             let flight_done = render_state.navigation_mode != CursorNavigationMode::NavigatingToTarget;
+            let tts_done = audio_player.as_ref().map_or(true, |p| !p.is_playing());
 
-            if elapsed >= 4 && flight_done {
+            // Wait for TTS audio to finish AND flight animation complete.
+            // Minimum 1 second so speech bubble is visible even for short responses.
+            // Safety timeout at 30 seconds to prevent getting stuck.
+            if (tts_done && flight_done && elapsed >= 1) || elapsed >= 30 {
                 if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseComplete) {
                     voice_state = new_state;
                     render_state.voice_state = voice_state;
@@ -512,13 +552,16 @@ async fn run_transcription_bridge(
     }
 }
 
-/// Async pipeline: screenshot → LLM API (Claude or OpenAI) → parse response → send to render loop
+/// Async pipeline: screenshot → LLM API (Claude or OpenAI) → parse response → TTS → send to render loop
 async fn run_llm_pipeline(
     http_client: reqwest::Client,
     provider: LlmProvider,
     anthropic_api_key: Option<String>,
     openai_api_key: Option<String>,
     worker_base_url: Option<String>,
+    elevenlabs_api_key: Option<String>,
+    elevenlabs_voice_id: Option<String>,
+    tts_enabled: bool,
     transcript: String,
     cursor_position: (f32, f32),
     history_exchanges: Vec<(String, String)>,
@@ -615,8 +658,35 @@ async fn run_llm_pipeline(
                 screen_number: p.screen_number,
             });
 
+            // Fire TTS immediately so audio arrives while Computer Use is still running.
+            // This way speech starts as soon as the cursor begins flying.
+            if tts_enabled && !parsed.spoken_text.is_empty() {
+                let tts_client = http_client.clone();
+                let tts_ui_tx = ui_tx.clone();
+                let tts_key = elevenlabs_api_key.clone();
+                let tts_voice = elevenlabs_voice_id.clone();
+                let tts_worker = worker_base_url.clone();
+                let tts_text = parsed.spoken_text.clone();
+                tokio::spawn(async move {
+                    match api::elevenlabs::synthesize_speech(
+                        &tts_client,
+                        tts_key.as_deref(),
+                        tts_voice.as_deref(),
+                        tts_worker.as_deref(),
+                        &tts_text,
+                    ).await {
+                        Ok(mp3_bytes) => {
+                            let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
+                        }
+                        Err(e) => {
+                            let _ = tts_ui_tx.send(UiEvent::TtsError(e.to_string()));
+                        }
+                    }
+                });
+            }
+
             // Run Computer Use API for more precise coordinate detection (Claude only).
-            // Uses the cursor display's screenshot — the one the user is looking at.
+            // Runs in parallel with TTS — both fire right after the LLM response.
             let computer_use_global_coordinate = if matches!(provider, LlmProvider::Anthropic | LlmProvider::WorkerProxy) {
                 if let Some(cursor_display) = capture.display_infos.iter().find(|d| d.is_cursor_display) {
                     let cursor_screenshot = capture.screenshots.iter()
