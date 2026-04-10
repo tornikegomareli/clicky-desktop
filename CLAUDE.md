@@ -42,6 +42,9 @@ cargo run          # loads .env automatically via dotenvy
 
 ## Conventions
 
+- Keep code simple
+- Simplicity > Nice code
+- If you have doubt of something stop and ask me
 - Clear variable names, no abbreviations.
 - Comments explain "why" not "what".
 - Don't add features beyond what's asked.
