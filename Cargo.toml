@@ -36,10 +36,4 @@ x11rb = { version = "0.13", features = ["xfixes"] }
 gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_HiDpi",
-    "Win32_Graphics_Dwm",
-] }
 winreg = "0.52"

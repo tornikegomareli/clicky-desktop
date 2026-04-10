@@ -889,7 +889,6 @@ dependencies = [
  "tokio-tungstenite",
  "toml 0.8.2",
  "tray-icon",
- "windows-sys 0.59.0",
  "winreg",
  "x11rb",
  "xcap",

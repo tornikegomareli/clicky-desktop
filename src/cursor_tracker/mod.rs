@@ -7,15 +7,12 @@
 /// Platform strategy:
 ///   Linux/Wayland  → evdev (reads /dev/input/ directly)
 ///   Linux/X11      → Raylib get_mouse_position (X11 delivers motion to shaped windows)
-///   Windows        → Win32 GetCursorPos
+///   Windows        → Raylib get_mouse_position
 ///   Fallback       → Raylib get_mouse_position (best effort)
 pub(crate) mod fallback;
 
 #[cfg(target_os = "linux")]
 mod evdev_tracker;
-
-#[cfg(target_os = "windows")]
-mod win32_tracker;
 
 #[cfg(target_os = "linux")]
 use crate::app::platform::DisplayServer;
@@ -62,8 +59,8 @@ pub fn create(
 
         #[cfg(target_os = "windows")]
         crate::app::platform::OperatingSystem::Windows => {
-            log::info!("Cursor tracking: Win32 GetCursorPos");
-            Box::new(win32_tracker::Win32CursorTracker)
+            log::info!("Cursor tracking: Raylib (Windows)");
+            Box::new(fallback::RaylibFallbackTracker::new())
         }
 
         #[allow(unreachable_patterns)]

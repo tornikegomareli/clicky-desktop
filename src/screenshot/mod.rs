@@ -16,30 +16,6 @@ use std::io::Cursor;
 const MAX_WIDTH: u32 = 1280;
 const JPEG_QUALITY: u8 = 80;
 
-/// Returns the DPI scale factor for the primary monitor on Windows.
-/// Falls back to 1.0 on other platforms or if detection fails.
-///
-/// IMPORTANT: On Windows, Raylib/GLFW calls SetProcessDpiAwarenessContext
-/// during init, making the process per-monitor DPI aware. After that,
-/// GetCursorPos returns physical pixels and the overlay window operates
-/// in physical pixel space. So we should NOT apply DPI scaling to
-/// coordinates — everything is already in physical pixels.
-///
-/// This function is only used for diagnostic logging.
-#[cfg(target_os = "windows")]
-fn get_windows_dpi_scale() -> f64 {
-    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-    let dpi = unsafe { GetDpiForSystem() };
-    let scale = dpi as f64 / 96.0;
-    log::info!("Windows DPI: {} (scale factor: {:.2}x — note: GLFW makes process DPI-aware, using physical pixels)", dpi, scale);
-    scale
-}
-
-#[cfg(not(target_os = "windows"))]
-fn get_windows_dpi_scale() -> f64 {
-    1.0
-}
-
 pub struct CaptureResult {
     pub screenshots: Vec<ScreenshotForClaude>,
     pub display_infos: Vec<DisplayInfo>,
@@ -368,9 +344,6 @@ fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
     if monitors.is_empty() {
         return Err(ScreenshotError::NoMonitors);
     }
-
-    // Log DPI for diagnostics (not used for coordinate conversion)
-    let _ = get_windows_dpi_scale();
 
     let total = monitors.len();
     let mut screenshots = Vec::with_capacity(total);

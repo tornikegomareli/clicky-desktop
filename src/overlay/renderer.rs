@@ -802,28 +802,6 @@ pub fn create_overlay_window(
     #[cfg(target_os = "linux")]
     configure_linux_overlay_window(platform);
 
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongW, SetWindowLongW, ShowWindow, GWL_EXSTYLE, SW_HIDE, SW_SHOWNOACTIVATE,
-            WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-        };
-        let hwnd = raylib::ffi::GetWindowHandle();
-        ShowWindow(hwnd, SW_HIDE);
-        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        SetWindowLongW(
-            hwnd,
-            GWL_EXSTYLE,
-            ex_style
-                | WS_EX_TOOLWINDOW as i32
-                | WS_EX_LAYERED as i32
-                | WS_EX_TRANSPARENT as i32
-                | WS_EX_TOPMOST as i32,
-        );
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        log::info!("Windows overlay: set WS_EX_TOOLWINDOW (hidden from taskbar)");
-    }
-
     raylib_handle.set_target_fps(60);
 
     (raylib_handle, raylib_thread)
