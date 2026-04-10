@@ -1,6 +1,5 @@
 /// Windows cursor tracker using Win32 GetCursorPos.
 /// Works regardless of window passthrough state.
-
 use super::CursorTracker;
 
 pub struct Win32CursorTracker;

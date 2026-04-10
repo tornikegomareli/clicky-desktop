@@ -1,34 +1,29 @@
-mod app;
-mod core;
 mod api;
-mod overlay;
-mod tray;
-mod panel;
-mod hotkey;
+mod app;
 mod audio;
-mod screenshot;
-mod cursor_tracker;
-mod config;
 mod autostart;
+mod config;
+mod core;
+mod cursor_tracker;
+mod hotkey;
+mod overlay;
+mod panel;
+mod runtime;
+mod screenshot;
+mod tray;
 
-use app::state_machine::{VoiceState, VoiceStateTransition, PointingInstruction};
-use audio::UiEvent;
+use app::state_machine::{VoiceState, VoiceStateTransition};
 use audio::capture::MicCapture;
+use audio::UiEvent;
 use core::audio_rms::AudioPowerLevelTracker;
-use core::pcm16_converter;
 use core::conversation::ConversationHistory;
-use hotkey::{PushToTalkTransition, HotkeyBackend};
-use overlay::renderer::{self, CursorNavigationMode, OverlayRenderState};
-use tray::TrayMenuEvent;
+use hotkey::PushToTalkTransition;
 use log::info;
-use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use overlay::renderer::{self, CursorNavigationMode, OverlayRenderState};
+use runtime::LlmProvider;
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-
-#[derive(Clone, PartialEq)]
-enum LlmProvider {
-    Anthropic,
-    Disabled,
-}
+use tray::TrayMenuEvent;
 
 fn main() {
     // Load .env file if present (ignored if missing)
@@ -81,7 +76,7 @@ fn main() {
         info!("Config file path: {}", config_path.display());
     }
 
-    log_runtime_config_state(&app_config, simulation_mode);
+    runtime::log_runtime_config_state(&app_config, simulation_mode);
 
     if force_setup_window || app_config.needs_onboarding() {
         log::warn!("Setup incomplete — opening onboarding window");
@@ -135,10 +130,16 @@ fn main() {
     // Log actual Raylib window size (may differ from requested due to DPI scaling)
     let actual_w = raylib_handle.get_screen_width();
     let actual_h = raylib_handle.get_screen_height();
-    info!("Raylib actual window: {}x{} (requested {}x{})", actual_w, actual_h, screen_w, screen_h);
+    info!(
+        "Raylib actual window: {}x{} (requested {}x{})",
+        actual_w, actual_h, screen_w, screen_h
+    );
 
     // Create platform-appropriate cursor tracker
+    #[cfg(target_os = "linux")]
     let cursor_tracker = cursor_tracker::create(&platform, screen_w, screen_h);
+    #[cfg(not(target_os = "linux"))]
+    let cursor_tracker = cursor_tracker::create(&platform);
 
     // Initialize overlay render state
     let mut render_state = OverlayRenderState::new();
@@ -180,7 +181,7 @@ fn main() {
                     reloaded_config.push_to_talk_hotkey != app_config.push_to_talk_hotkey;
                 app_config = reloaded_config;
                 log::info!("Reloaded settings from config file");
-                log_runtime_config_state(&app_config, simulation_mode);
+                runtime::log_runtime_config_state(&app_config, simulation_mode);
 
                 if hotkey_changed {
                     hotkey_manager = hotkey::create(&platform, app_config.push_to_talk_hotkey);
@@ -250,16 +251,20 @@ fn main() {
                                 Ok(audio_rx) => {
                                     info!("Mic capture started");
                                     if transcription_enabled {
-                                        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                                        let (cancel_tx, cancel_rx) =
+                                            tokio::sync::oneshot::channel();
                                         active_session_cancel = Some(cancel_tx);
                                         let ui_tx = ui_event_tx.clone();
                                         let api_key = assemblyai_api_key.clone();
-                                        tokio_rt.spawn(run_transcription_bridge(audio_rx, ui_tx, api_key, cancel_rx));
+                                        tokio_rt.spawn(runtime::run_transcription_bridge(
+                                            audio_rx, ui_tx, api_key, cancel_rx,
+                                        ));
                                     }
                                 }
                                 Err(err) => {
                                     log::error!("Mic capture failed: {}", err);
-                                    if let Some(s) = voice_state.apply(VoiceStateTransition::Error(err.to_string())) {
+                                    if let Some(s) = voice_state.apply(VoiceStateTransition::Error)
+                                    {
                                         voice_state = s;
                                         render_state.voice_state = voice_state;
                                     }
@@ -274,7 +279,9 @@ fn main() {
                         if simulation_mode {
                             // Simulation: skip transcription, go straight to Processing
                             // and fire a fake LLM response after a short delay
-                            if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
+                            if let Some(new_state) =
+                                voice_state.apply(VoiceStateTransition::HotkeyReleased)
+                            {
                                 voice_state = new_state;
                                 render_state.voice_state = voice_state;
                             }
@@ -306,7 +313,9 @@ fn main() {
                                 });
                             });
                         } else if let Some(cancel_tx) = active_session_cancel.take() {
-                            if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
+                            if let Some(new_state) =
+                                voice_state.apply(VoiceStateTransition::HotkeyReleased)
+                            {
                                 voice_state = new_state;
                                 render_state.voice_state = voice_state;
                             }
@@ -371,10 +380,18 @@ fn main() {
                         let cursor_pos = cursor_tracker.get_position();
 
                         let plat = platform.clone();
-                        tokio_rt.spawn(run_llm_pipeline(
-                            client, provider, anthro_key,
-                            el_key, el_voice, tts_enabled,
-                            transcript, cursor_pos, history, plat, ui_tx,
+                        tokio_rt.spawn(runtime::run_llm_pipeline(
+                            client,
+                            provider,
+                            anthro_key,
+                            el_key,
+                            el_voice,
+                            tts_enabled,
+                            transcript,
+                            cursor_pos,
+                            history,
+                            plat,
+                            ui_tx,
                         ));
                     } else {
                         info!("FINAL transcript (no Claude): {}", transcript);
@@ -390,7 +407,12 @@ fn main() {
                     render_state.voice_state = voice_state;
                     processing_since = None;
                 }
-                UiEvent::LlmResponse { spoken_text, pointing_instruction, display_infos, computer_use_global_coordinate } => {
+                UiEvent::LlmResponse {
+                    spoken_text,
+                    pointing_instruction,
+                    display_infos,
+                    computer_use_global_coordinate,
+                } => {
                     if voice_state != VoiceState::Processing {
                         continue;
                     }
@@ -403,10 +425,8 @@ fn main() {
                     }
 
                     // Transition to Responding
-                    if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseReady {
-                        response_text: spoken_text.clone(),
-                        pointing_instruction: pointing_instruction.clone(),
-                    }) {
+                    if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseReady)
+                    {
                         voice_state = new_state;
                         render_state.voice_state = voice_state;
                     }
@@ -418,12 +438,17 @@ fn main() {
                             global_x, global_y, render_state.cursor_x, render_state.cursor_y);
                         render_state.start_flight_to(global_x, global_y, spoken_text.clone());
                     } else if let Some(ref instruction) = pointing_instruction {
-                        info!("POINT tag: screenshot_pixel=({}, {}), label='{}', screen={:?}",
-                            instruction.screenshot_x, instruction.screenshot_y,
-                            instruction.label, instruction.screen_number);
+                        info!(
+                            "POINT tag: screenshot_pixel=({}, {}), label='{}', screen={:?}",
+                            instruction.screenshot_x,
+                            instruction.screenshot_y,
+                            instruction.label,
+                            instruction.screen_number
+                        );
 
                         let target = core::coordinate_mapper::find_target_display(
-                            instruction.screen_number, &display_infos,
+                            instruction.screen_number,
+                            &display_infos,
                         );
                         if let Some(display) = target {
                             info!("Target display: screen={} origin=({},{}) display_points={}x{} screenshot_px={}x{}",
@@ -440,14 +465,18 @@ fn main() {
 
                             render_state.start_flight_to(coord.x, coord.y, spoken_text.clone());
                         } else {
-                            log::warn!("No matching display found for screen {:?}", instruction.screen_number);
+                            log::warn!(
+                                "No matching display found for screen {:?}",
+                                instruction.screen_number
+                            );
                         }
                     }
 
                     // Set friendly bubble phrase (full response goes to TTS voice)
-                    let is_pointing = computer_use_global_coordinate.is_some()
-                        || pointing_instruction.is_some();
-                    render_state.speech_bubble_text = core::bubble_text::pick_bubble_phrase(is_pointing);
+                    let is_pointing =
+                        computer_use_global_coordinate.is_some() || pointing_instruction.is_some();
+                    render_state.speech_bubble_text =
+                        core::bubble_text::pick_bubble_phrase(is_pointing);
 
                     responding_since = Some(std::time::Instant::now());
                     claude_pipeline_active = false;
@@ -464,9 +493,7 @@ fn main() {
                     let spoken = render_state.speech_bubble_text.clone();
                     if !spoken.is_empty() {
                         std::thread::spawn(move || {
-                            let _ = std::process::Command::new("espeak-ng")
-                                .arg(&spoken)
-                                .spawn();
+                            let _ = std::process::Command::new("espeak-ng").arg(&spoken).spawn();
                         });
                     }
                 }
@@ -522,7 +549,9 @@ fn main() {
                 }
                 CursorNavigationMode::FollowingMouse => {
                     // Return flight completed → transition to Idle
-                    if let Some(new_state) = voice_state.apply(VoiceStateTransition::ResponseComplete) {
+                    if let Some(new_state) =
+                        voice_state.apply(VoiceStateTransition::ResponseComplete)
+                    {
                         voice_state = new_state;
                         render_state.voice_state = voice_state;
                     }
@@ -563,278 +592,4 @@ fn main() {
     }
 
     info!("Clicky Desktop shutting down");
-}
-
-/// Async bridge: mic audio → PCM16 → AssemblyAI WebSocket → transcripts
-async fn run_transcription_bridge(
-    audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
-    ui_tx: std_mpsc::Sender<UiEvent>,
-    api_key: Option<String>,
-    cancel_rx: tokio::sync::oneshot::Receiver<()>,
-) {
-    let http_client = reqwest::Client::new();
-
-    let token = match api::assemblyai::fetch_temporary_streaming_token(
-        &http_client, api_key.as_deref(), None,
-    ).await {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = ui_tx.send(UiEvent::TranscriptionError(format!("Token fetch failed: {:?}", e)));
-            return;
-        }
-    };
-
-    let mut session = match api::assemblyai::StreamingTranscriptionSession::start(&token).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = ui_tx.send(UiEvent::TranscriptionError(format!("Session start failed: {:?}", e)));
-            return;
-        }
-    };
-
-    info!("AssemblyAI transcription session started");
-
-    let mut transcript_rx = session.take_transcript_receiver();
-    let audio_sender = session.audio_sender();
-    let (async_audio_tx, mut async_audio_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-
-    tokio::task::spawn_blocking(move || {
-        const MIN_CHUNK_BYTES: usize = 3200;
-        let mut buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
-        while let Ok(chunk) = audio_rx.recv() {
-            let pcm16 = pcm16_converter::convert_float32_to_pcm16_mono(
-                &chunk.samples, chunk.sample_rate, chunk.channels,
-            );
-            buffer.extend_from_slice(&pcm16);
-            if buffer.len() >= MIN_CHUNK_BYTES {
-                if async_audio_tx.blocking_send(std::mem::take(&mut buffer)).is_err() { break; }
-                buffer = Vec::with_capacity(MIN_CHUNK_BYTES * 2);
-            }
-        }
-        if !buffer.is_empty() { let _ = async_audio_tx.blocking_send(buffer); }
-    });
-
-    let ui_tx_for_transcripts = ui_tx.clone();
-    let (final_tx, final_rx) = tokio::sync::oneshot::channel::<()>();
-    let transcript_handle = tokio::spawn(async move {
-        while let Some(update) = transcript_rx.recv().await {
-            let is_final = matches!(update, api::assemblyai::TranscriptUpdate::Final(_));
-            let event = match update {
-                api::assemblyai::TranscriptUpdate::Partial(text) => UiEvent::PartialTranscript(text),
-                api::assemblyai::TranscriptUpdate::Final(text) => UiEvent::FinalTranscript(text),
-                api::assemblyai::TranscriptUpdate::Error(err) => UiEvent::TranscriptionError(err),
-            };
-            if ui_tx_for_transcripts.send(event).is_err() { break; }
-            if is_final { let _ = final_tx.send(()); break; }
-        }
-    });
-
-    let _ = cancel_rx.await;
-    while let Some(pcm16) = async_audio_rx.recv().await {
-        if audio_sender.send(pcm16).await.is_err() { break; }
-    }
-
-    info!("Audio drained, requesting final transcript...");
-    let _ = session.request_final_transcript().await;
-
-    match tokio::time::timeout(tokio::time::Duration::from_millis(1500), final_rx).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = ui_tx.send(UiEvent::FinalTranscript(String::new()));
-            transcript_handle.abort();
-        }
-    }
-}
-
-/// Async pipeline: screenshot → LLM API (Claude or OpenAI) → parse response → TTS → send to render loop
-async fn run_llm_pipeline(
-    http_client: reqwest::Client,
-    provider: LlmProvider,
-    anthropic_api_key: Option<String>,
-    elevenlabs_api_key: Option<String>,
-    elevenlabs_voice_id: Option<String>,
-    tts_enabled: bool,
-    transcript: String,
-    cursor_position: (f32, f32),
-    history_exchanges: Vec<(String, String)>,
-    platform: app::platform::PlatformInfo,
-    ui_tx: std_mpsc::Sender<UiEvent>,
-) {
-    // Capture screenshots (blocking — JPEG encoding is CPU-bound)
-    let (cx, cy) = cursor_position;
-    let capture = match tokio::task::spawn_blocking(move || {
-        screenshot::capture_all_screens(cx, cy, &platform)
-    }).await {
-        Ok(Ok(c)) => c,
-        Ok(Err(e)) => {
-            log::error!("Screenshot failed: {} — cannot send to LLM without screen context", e);
-            let _ = ui_tx.send(UiEvent::PipelineError(format!("Screenshot failed: {}", e)));
-            return;
-        }
-        Err(e) => {
-            log::error!("Screenshot task panicked: {}", e);
-            let _ = ui_tx.send(UiEvent::PipelineError("Screenshot task failed".into()));
-            return;
-        }
-    };
-
-    // Debug: save screenshots to /tmp for inspection
-    for (i, screenshot) in capture.screenshots.iter().enumerate() {
-        let path = if cfg!(target_os = "windows") {
-            format!("{}\\clicky_debug_screenshot_{}.jpg", std::env::temp_dir().display(), i)
-        } else {
-            format!("/tmp/clicky_debug_screenshot_{}.jpg", i)
-        };
-        if let Err(e) = std::fs::write(&path, &screenshot.jpeg_data) {
-            log::warn!("Failed to save debug screenshot: {}", e);
-        } else {
-            info!("Debug screenshot saved: {} (label: {})", path, screenshot.label);
-        }
-    }
-    for (i, display) in capture.display_infos.iter().enumerate() {
-        info!("Debug display {}: origin=({},{}) size={}x{} screenshot={}x{} cursor={}",
-            i, display.global_origin_x, display.global_origin_y,
-            display.display_width_points, display.display_height_points,
-            display.screenshot_width_pixels, display.screenshot_height_pixels,
-            display.is_cursor_display);
-    }
-
-    // Build messages with conversation history
-    let mut messages = Vec::new();
-    for (user_text, assistant_text) in &history_exchanges {
-        messages.push(serde_json::json!({"role": "user", "content": user_text}));
-        messages.push(serde_json::json!({"role": "assistant", "content": assistant_text}));
-    }
-
-    let system_prompt = api::claude::COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT;
-
-    let result: Result<String, String> = match provider {
-        LlmProvider::Anthropic => {
-            let user_content = api::claude::build_vision_message_content(&transcript, &capture.screenshots);
-            messages.push(serde_json::json!({"role": "user", "content": user_content}));
-
-            let model = api::claude::DEFAULT_CLAUDE_MODEL;
-            info!("Sending to Claude ({})...", model);
-
-            api::claude::stream_claude_response(
-                &http_client,
-                anthropic_api_key.as_deref(),
-                None,
-                model, system_prompt, messages, |_| {},
-            ).await.map_err(|e| e.to_string())
-        }
-        LlmProvider::Disabled => unreachable!(),
-    };
-
-    match result {
-        Ok(response_text) => {
-            let parsed = core::point_parser::parse_claude_response(&response_text);
-
-            let pointing = parsed.pointing.map(|p| PointingInstruction {
-                screenshot_x: p.screenshot_pixel_x,
-                screenshot_y: p.screenshot_pixel_y,
-                label: p.element_label,
-                screen_number: p.screen_number,
-            });
-
-            // Fire TTS immediately so audio arrives while Computer Use is still running.
-            // This way speech starts as soon as the cursor begins flying.
-            if tts_enabled && !parsed.spoken_text.is_empty() {
-                let tts_client = http_client.clone();
-                let tts_ui_tx = ui_tx.clone();
-                let tts_key = elevenlabs_api_key.clone();
-                let tts_voice = elevenlabs_voice_id.clone();
-                let tts_text = parsed.spoken_text.clone();
-                tokio::spawn(async move {
-                    match api::elevenlabs::synthesize_speech(
-                        &tts_client,
-                        tts_key.as_deref(),
-                        tts_voice.as_deref(),
-                        None,
-                        &tts_text,
-                    ).await {
-                        Ok(mp3_bytes) => {
-                            let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
-                        }
-                        Err(e) => {
-                            let _ = tts_ui_tx.send(UiEvent::TtsError(e.to_string()));
-                        }
-                    }
-                });
-            }
-
-            // Run Computer Use API for more precise coordinate detection (Claude only).
-            // Runs in parallel with TTS — both fire right after the LLM response.
-            let computer_use_global_coordinate = if matches!(provider, LlmProvider::Anthropic) {
-                if let Some(cursor_display) = capture.display_infos.iter().find(|d| d.is_cursor_display) {
-                    let cursor_screenshot = capture.screenshots.iter()
-                        .zip(capture.display_infos.iter())
-                        .find(|(_, d)| d.is_cursor_display)
-                        .map(|(s, _)| s);
-
-                    if let Some(screenshot) = cursor_screenshot {
-                        info!("Running Computer Use API for precise coordinate detection...");
-                        match api::computer_use::detect_element_location(
-                            &http_client,
-                            anthropic_api_key.as_deref(),
-                            None,
-                            &screenshot.jpeg_data,
-                            &transcript,
-                            cursor_display.display_width_points,
-                            cursor_display.display_height_points,
-                        ).await {
-                            Some(coord) => {
-                                // Convert display-local to global by adding display origin
-                                let global_x = cursor_display.global_origin_x + coord.display_local_x;
-                                let global_y = cursor_display.global_origin_y + coord.display_local_y;
-                                info!("Computer Use global coordinate: ({:.1}, {:.1})", global_x, global_y);
-                                Some((global_x, global_y))
-                            }
-                            None => {
-                                info!("Computer Use: no element detected, using POINT tag if available");
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let _ = ui_tx.send(UiEvent::LlmResponse {
-                spoken_text: parsed.spoken_text,
-                pointing_instruction: pointing,
-                display_infos: capture.display_infos.clone(),
-                computer_use_global_coordinate,
-            });
-        }
-        Err(e) => {
-            log::error!("LLM API error: {}", e);
-            let _ = ui_tx.send(UiEvent::PipelineError(e.to_string()));
-        }
-    }
-}
-
-fn log_runtime_config_state(app_config: &config::AppConfig, simulation_mode: bool) {
-    if app_config.anthropic_api_key.is_some() {
-        info!("LLM: direct Anthropic API (Claude)");
-    } else {
-        log::warn!("Set ANTHROPIC_API_KEY to enable AI responses");
-    }
-
-    if !app_config.assemblyai_api_key.is_some() && !simulation_mode {
-        log::warn!("Set ASSEMBLYAI_API_KEY to enable transcription");
-    } else if app_config.assemblyai_api_key.is_some() {
-        info!("Transcription: direct AssemblyAI API");
-    }
-
-    if !app_config.elevenlabs_api_key.is_some() {
-        log::warn!("Set ELEVENLABS_API_KEY to enable TTS");
-    } else {
-        info!("TTS: direct ElevenLabs API");
-    }
 }

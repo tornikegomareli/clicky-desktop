@@ -1,7 +1,6 @@
 /// Generates a short friendly phrase for the speech bubble.
 /// The full LLM response is spoken via TTS — the bubble just shows
 /// a brief, warm pointer phrase.
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static PHRASE_INDEX: AtomicUsize = AtomicUsize::new(0);
@@ -31,7 +30,11 @@ const GENERAL_PHRASES: &[&str] = &[
 /// Returns a short friendly phrase for the speech bubble.
 /// Cycles through curated phrases to avoid repetition.
 pub fn pick_bubble_phrase(is_pointing: bool) -> String {
-    let phrases = if is_pointing { POINTING_PHRASES } else { GENERAL_PHRASES };
+    let phrases = if is_pointing {
+        POINTING_PHRASES
+    } else {
+        GENERAL_PHRASES
+    };
     let index = PHRASE_INDEX.fetch_add(1, Ordering::Relaxed) % phrases.len();
     phrases[index].to_string()
 }

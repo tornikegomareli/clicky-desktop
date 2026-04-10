@@ -1,9 +1,9 @@
 pub mod capture;
 pub mod playback;
 
-use std::fmt;
 use crate::app::state_machine::PointingInstruction;
 use crate::core::coordinate_mapper::DisplayInfo;
+use std::fmt;
 
 /// Events sent from async background tasks to the synchronous render loop.
 pub enum UiEvent {

@@ -1,9 +1,8 @@
+use super::CursorTracker;
 /// Fallback cursor tracker that stores position set by the main loop.
 /// Used on X11 (where Raylib can track mouse with passthrough) and
 /// as a last resort on any platform.
-
 use std::sync::atomic::{AtomicI32, Ordering};
-use super::CursorTracker;
 
 pub struct RaylibFallbackTracker {
     x: AtomicI32,

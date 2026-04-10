@@ -10,7 +10,9 @@
 mod evdev_hotkey;
 mod global_hotkey_backend;
 
-use crate::app::platform::{PlatformInfo, OperatingSystem, DisplayServer};
+#[cfg(target_os = "linux")]
+use crate::app::platform::DisplayServer;
+use crate::app::platform::PlatformInfo;
 use crate::config::PushToTalkHotkey;
 
 /// Push-to-talk shortcut transitions.
@@ -26,10 +28,13 @@ pub trait HotkeyBackend: Send {
 }
 
 /// Creates the best hotkey backend for the current platform.
-pub fn create(platform: &PlatformInfo, shortcut: PushToTalkHotkey) -> Option<Box<dyn HotkeyBackend>> {
+pub fn create(
+    platform: &PlatformInfo,
+    shortcut: PushToTalkHotkey,
+) -> Option<Box<dyn HotkeyBackend>> {
     match platform.os {
         #[cfg(target_os = "linux")]
-        OperatingSystem::Linux => {
+        crate::app::platform::OperatingSystem::Linux => {
             if platform.display_server == Some(DisplayServer::Wayland) {
                 // X11 XGrabKey doesn't work on XWayland — use evdev
                 match evdev_hotkey::EvdevHotkeyManager::new(shortcut) {
@@ -62,20 +67,18 @@ pub fn create(platform: &PlatformInfo, shortcut: PushToTalkHotkey) -> Option<Box
         }
 
         #[allow(unreachable_patterns)]
-        _ => {
-            match global_hotkey_backend::GlobalHotkeyManager::new(shortcut) {
-                Ok(manager) => {
-                    log::info!(
-                        "Hotkey: global-hotkey — {} push-to-talk",
-                        shortcut.display_name()
-                    );
-                    Some(Box::new(manager))
-                }
-                Err(err) => {
-                    log::warn!("Global hotkey not available: {}", err);
-                    None
-                }
+        _ => match global_hotkey_backend::GlobalHotkeyManager::new(shortcut) {
+            Ok(manager) => {
+                log::info!(
+                    "Hotkey: global-hotkey — {} push-to-talk",
+                    shortcut.display_name()
+                );
+                Some(Box::new(manager))
             }
-        }
+            Err(err) => {
+                log::warn!("Global hotkey not available: {}", err);
+                None
+            }
+        },
     }
 }

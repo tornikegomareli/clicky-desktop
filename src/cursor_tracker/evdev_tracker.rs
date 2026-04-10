@@ -1,13 +1,12 @@
+use super::CursorTracker;
 /// Linux evdev cursor tracker.
 /// Reads raw input events from /dev/input/ to track cursor position
 /// independently of the window system. Works on both Wayland and X11.
 ///
 /// Requires the user to be in the 'input' group.
-
-use evdev::{Device, InputEventKind, RelativeAxisType, AbsoluteAxisType};
+use evdev::{AbsoluteAxisType, Device, InputEventKind, RelativeAxisType};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
-use super::CursorTracker;
 
 pub struct EvdevCursorTracker {
     x: Arc<AtomicI32>,
@@ -37,9 +36,18 @@ impl EvdevCursorTracker {
             log::info!(
                 "evdev tracker started: {} (abs_x: {:?}, abs_y: {:?})",
                 device.name().unwrap_or("unknown"),
-                abs_x_range, abs_y_range,
+                abs_x_range,
+                abs_y_range,
             );
-            run_event_loop(&mut device, &thread_x, &thread_y, screen_width, screen_height, abs_x_range, abs_y_range);
+            run_event_loop(
+                &mut device,
+                &thread_x,
+                &thread_y,
+                screen_width,
+                screen_height,
+                abs_x_range,
+                abs_y_range,
+            );
         });
 
         Some(Self { x, y })
@@ -74,11 +82,17 @@ fn run_event_loop(
                             match axis {
                                 RelativeAxisType::REL_X => {
                                     let old = x.load(Ordering::Relaxed);
-                                    x.store((old + delta).clamp(0, screen_width - 1), Ordering::Relaxed);
+                                    x.store(
+                                        (old + delta).clamp(0, screen_width - 1),
+                                        Ordering::Relaxed,
+                                    );
                                 }
                                 RelativeAxisType::REL_Y => {
                                     let old = y.load(Ordering::Relaxed);
-                                    y.store((old + delta).clamp(0, screen_height - 1), Ordering::Relaxed);
+                                    y.store(
+                                        (old + delta).clamp(0, screen_height - 1),
+                                        Ordering::Relaxed,
+                                    );
                                 }
                                 _ => {}
                             }
@@ -87,11 +101,13 @@ fn run_event_loop(
                             let val = event.value() as f64;
                             match axis {
                                 AbsoluteAxisType::ABS_X => {
-                                    let screen_x = map_abs_to_screen(val, abs_x_range, screen_width);
+                                    let screen_x =
+                                        map_abs_to_screen(val, abs_x_range, screen_width);
                                     x.store(screen_x, Ordering::Relaxed);
                                 }
                                 AbsoluteAxisType::ABS_Y => {
-                                    let screen_y = map_abs_to_screen(val, abs_y_range, screen_height);
+                                    let screen_y =
+                                        map_abs_to_screen(val, abs_y_range, screen_height);
                                     y.store(screen_y, Ordering::Relaxed);
                                 }
                                 _ => {}
@@ -133,10 +149,16 @@ fn find_pointing_device() -> Option<Device> {
                 if name.contains("joystick") || name.contains("gamepad") {
                     continue;
                 }
-                log::info!("Found absolute pointing device: {} ({:?})", device.name().unwrap_or("unknown"), path);
+                log::info!(
+                    "Found absolute pointing device: {} ({:?})",
+                    device.name().unwrap_or("unknown"),
+                    path
+                );
                 // Re-enumerate to get an owned Device (can't move from reference)
                 for (p2, d2) in evdev::enumerate() {
-                    if p2 == *path { return Some(d2); }
+                    if p2 == *path {
+                        return Some(d2);
+                    }
                 }
             }
         }
@@ -146,9 +168,15 @@ fn find_pointing_device() -> Option<Device> {
     for (path, device) in &devices {
         if let Some(axes) = device.supported_relative_axes() {
             if axes.contains(RelativeAxisType::REL_X) && axes.contains(RelativeAxisType::REL_Y) {
-                log::info!("Found relative mouse device: {} ({:?})", device.name().unwrap_or("unknown"), path);
+                log::info!(
+                    "Found relative mouse device: {} ({:?})",
+                    device.name().unwrap_or("unknown"),
+                    path
+                );
                 for (p2, d2) in evdev::enumerate() {
-                    if p2 == *path { return Some(d2); }
+                    if p2 == *path {
+                        return Some(d2);
+                    }
                 }
             }
         }

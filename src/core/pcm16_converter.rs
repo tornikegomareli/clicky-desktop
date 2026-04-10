@@ -2,7 +2,7 @@
 /// Ported from BuddyPCM16AudioConverter in BuddyAudioConversionSupport.swift:11-70.
 ///
 /// Microphone input typically arrives at 44100Hz or 48000Hz float32.
-/// The transcription providers (AssemblyAI, OpenAI) require 16000Hz signed 16-bit
+/// The transcription provider requires 16000Hz signed 16-bit
 /// little-endian mono PCM. This module handles the conversion.
 
 /// Target sample rate for all transcription providers.
@@ -22,7 +22,7 @@ pub const TARGET_SAMPLE_RATE: u32 = 16000;
 ///
 /// # Returns
 /// Raw PCM16 bytes (little-endian, mono, 16kHz) suitable for streaming
-/// to AssemblyAI or building a WAV file for OpenAI.
+/// to AssemblyAI.
 pub fn convert_float32_to_pcm16_mono(
     input_samples: &[f32],
     input_sample_rate: u32,

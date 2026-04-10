@@ -2,6 +2,7 @@
 use directories::BaseDirs;
 #[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::path::PathBuf;
 
 pub fn is_supported() -> bool {
@@ -10,9 +11,11 @@ pub fn is_supported() -> bool {
 
 pub fn set_enabled(enabled: bool) -> Result<(), String> {
     if !is_supported() {
+        let _ = enabled;
         return Err("Autostart is not implemented on this platform yet".into());
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     let executable_path =
         std::env::current_exe().map_err(|e| format!("Failed to resolve executable path: {e}"))?;
 

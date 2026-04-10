@@ -17,7 +17,9 @@ mod evdev_tracker;
 #[cfg(target_os = "windows")]
 mod win32_tracker;
 
-use crate::app::platform::{DisplayServer, OperatingSystem, PlatformInfo};
+#[cfg(target_os = "linux")]
+use crate::app::platform::DisplayServer;
+use crate::app::platform::PlatformInfo;
 
 /// Trait for reading global cursor position, regardless of platform.
 pub trait CursorTracker: Send {
@@ -34,12 +36,12 @@ pub trait CursorTracker: Send {
 /// Returns None only if no tracking method is available at all.
 pub fn create(
     platform: &PlatformInfo,
-    screen_width: i32,
-    screen_height: i32,
+    #[cfg(target_os = "linux")] screen_width: i32,
+    #[cfg(target_os = "linux")] screen_height: i32,
 ) -> Box<dyn CursorTracker> {
     match platform.os {
         #[cfg(target_os = "linux")]
-        OperatingSystem::Linux => {
+        crate::app::platform::OperatingSystem::Linux => {
             // On Wayland, Raylib can't get mouse position with passthrough enabled.
             // Use evdev to read directly from input devices.
             if platform.display_server == Some(DisplayServer::Wayland) {
@@ -59,7 +61,7 @@ pub fn create(
         }
 
         #[cfg(target_os = "windows")]
-        OperatingSystem::Windows => {
+        crate::app::platform::OperatingSystem::Windows => {
             log::info!("Cursor tracking: Win32 GetCursorPos");
             Box::new(win32_tracker::Win32CursorTracker)
         }

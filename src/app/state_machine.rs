@@ -31,16 +31,13 @@ pub enum VoiceStateTransition {
     HotkeyReleased,
 
     /// Transcription + screenshot + Claude response complete, TTS starting
-    ResponseReady {
-        response_text: String,
-        pointing_instruction: Option<PointingInstruction>,
-    },
+    ResponseReady,
 
     /// TTS audio finished playing (and pointing animation completed)
     ResponseComplete,
 
     /// An error occurred — return to idle
-    Error(String),
+    Error,
 }
 
 /// Parsed from Claude's [POINT:x,y:label:screenN] tag.
@@ -66,13 +63,11 @@ impl VoiceState {
     pub fn apply(&self, transition: VoiceStateTransition) -> Option<VoiceState> {
         match (self, &transition) {
             // Normal flow
-            (VoiceState::Idle, VoiceStateTransition::HotkeyPressed) => {
-                Some(VoiceState::Listening)
-            }
+            (VoiceState::Idle, VoiceStateTransition::HotkeyPressed) => Some(VoiceState::Listening),
             (VoiceState::Listening, VoiceStateTransition::HotkeyReleased) => {
                 Some(VoiceState::Processing)
             }
-            (VoiceState::Processing, VoiceStateTransition::ResponseReady { .. }) => {
+            (VoiceState::Processing, VoiceStateTransition::ResponseReady) => {
                 Some(VoiceState::Responding)
             }
             (VoiceState::Responding, VoiceStateTransition::ResponseComplete) => {
@@ -88,7 +83,7 @@ impl VoiceState {
             }
 
             // Error from any state returns to idle
-            (_, VoiceStateTransition::Error(_)) => Some(VoiceState::Idle),
+            (_, VoiceStateTransition::Error) => Some(VoiceState::Idle),
 
             // All other transitions are invalid — ignore them
             _ => None,
@@ -113,12 +108,7 @@ mod tests {
         assert_eq!(state, VoiceState::Processing);
 
         // Response ready → responding
-        state = state
-            .apply(VoiceStateTransition::ResponseReady {
-                response_text: "test response".to_string(),
-                pointing_instruction: None,
-            })
-            .unwrap();
+        state = state.apply(VoiceStateTransition::ResponseReady).unwrap();
         assert_eq!(state, VoiceState::Responding);
 
         // Response complete → idle
@@ -138,9 +128,7 @@ mod tests {
     #[test]
     fn error_returns_to_idle() {
         let state = VoiceState::Responding;
-        let new_state = state
-            .apply(VoiceStateTransition::Error("test error".to_string()))
-            .unwrap();
+        let new_state = state.apply(VoiceStateTransition::Error).unwrap();
         assert_eq!(new_state, VoiceState::Idle);
     }
 
