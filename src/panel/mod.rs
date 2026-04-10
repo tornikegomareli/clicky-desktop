@@ -5,6 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static SETTINGS_WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 
+/// Run the onboarding/setup window on the main thread (blocking).
+/// Must be called before Raylib initialization since both need the main thread.
+pub fn run_onboarding_blocking(initial_config: AppConfig) {
+    run_settings_native(initial_config, true);
+}
+
 pub fn open_settings_window(initial_config: AppConfig, onboarding_mode: bool) {
     if SETTINGS_WINDOW_OPEN.swap(true, Ordering::SeqCst) {
         log::info!("Settings window already open");
@@ -12,33 +18,36 @@ pub fn open_settings_window(initial_config: AppConfig, onboarding_mode: bool) {
     }
 
     std::thread::spawn(move || {
-        let window_title = if onboarding_mode {
-            "Clicky Setup"
-        } else {
-            "Clicky Settings"
-        };
-
-        let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([520.0, 540.0])
-                .with_min_inner_size([480.0, 500.0])
-                .with_title(window_title),
-            ..Default::default()
-        };
-
-        let app = SettingsApp::new(initial_config, onboarding_mode);
-        let result = eframe::run_native(
-            window_title,
-            native_options,
-            Box::new(|_cc| Ok(Box::new(app))),
-        );
-
+        run_settings_native(initial_config, onboarding_mode);
         SETTINGS_WINDOW_OPEN.store(false, Ordering::SeqCst);
-
-        if let Err(error) = result {
-            log::error!("Failed to open settings window: {}", error);
-        }
     });
+}
+
+fn run_settings_native(initial_config: AppConfig, onboarding_mode: bool) {
+    let window_title = if onboarding_mode {
+        "Clicky Setup"
+    } else {
+        "Clicky Settings"
+    };
+
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([520.0, 540.0])
+            .with_min_inner_size([480.0, 500.0])
+            .with_title(window_title),
+        ..Default::default()
+    };
+
+    let app = SettingsApp::new(initial_config, onboarding_mode);
+    let result = eframe::run_native(
+        window_title,
+        native_options,
+        Box::new(|_cc| Ok(Box::new(app))),
+    );
+
+    if let Err(error) = result {
+        log::error!("Failed to open settings window: {}", error);
+    }
 }
 
 struct SettingsApp {

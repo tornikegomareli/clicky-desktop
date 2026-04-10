@@ -84,8 +84,10 @@ fn main() {
     log_runtime_config_state(&app_config, simulation_mode);
 
     if force_setup_window || app_config.needs_onboarding() {
-        log::warn!("Setup incomplete: use the tray menu to open setup and add provider keys");
-        panel::open_settings_window(app_config.clone(), true);
+        log::warn!("Setup incomplete — opening onboarding window");
+        panel::run_onboarding_blocking(app_config.clone());
+        // Reload config after onboarding (user may have saved new keys)
+        app_config = config::AppConfig::load();
     }
 
     // Reusable HTTP client for API calls
