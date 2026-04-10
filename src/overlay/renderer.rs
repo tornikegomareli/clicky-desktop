@@ -5,8 +5,20 @@
 /// borderless window that overlays the entire virtual desktop.
 
 use raylib::prelude::*;
+use crate::app::platform::PlatformInfo;
 use crate::app::state_machine::VoiceState;
 use crate::core::{bezier_flight, design_system};
+
+#[cfg(target_os = "linux")]
+use crate::app::platform::DisplayServer;
+#[cfg(target_os = "linux")]
+use std::ffi::{c_ulong, c_void};
+#[cfg(target_os = "linux")]
+use x11rb::connection::Connection;
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as XprotoConnectionExt, PropMode};
+#[cfg(target_os = "linux")]
+use x11rb::wrapper::ConnectionExt as XprotoWrapperExt;
 
 /// Navigation mode for the blue cursor triangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -743,6 +755,7 @@ pub fn load_bubble_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> Option<
 pub fn create_overlay_window(
     window_width: i32,
     window_height: i32,
+    #[allow(unused_variables)] platform: &PlatformInfo,
 ) -> (RaylibHandle, RaylibThread) {
     let (mut raylib_handle, raylib_thread) = raylib::init()
         .size(window_width, window_height)
@@ -757,6 +770,9 @@ pub fn create_overlay_window(
                 | raylib::ffi::ConfigFlags::FLAG_WINDOW_MOUSE_PASSTHROUGH as u32,
         );
     }
+
+    #[cfg(target_os = "linux")]
+    configure_linux_overlay_window(platform);
 
     #[cfg(target_os = "windows")]
     unsafe {
@@ -781,4 +797,93 @@ pub fn create_overlay_window(
     raylib_handle.set_target_fps(60);
 
     (raylib_handle, raylib_thread)
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_overlay_window(platform: &PlatformInfo) {
+    match platform.display_server {
+        Some(DisplayServer::X11) => {
+            if let Err(error) = apply_x11_overlay_hints() {
+                log::warn!("Linux X11 overlay: failed to set skip-taskbar hints: {}", error);
+            } else {
+                log::info!("Linux X11 overlay: enabled skip-taskbar and skip-pager hints");
+            }
+        }
+        Some(DisplayServer::Wayland) => {
+            log::info!(
+                "Linux Wayland overlay: dock/taskbar suppression is compositor-limited with the current Raylib/GLFW backend"
+            );
+        }
+        None => {
+            log::debug!("Linux overlay: display server unknown, leaving default window-manager hints");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_x11_overlay_hints() -> Result<(), String> {
+    let glfw_window = unsafe { raylib::ffi::GetWindowHandle() };
+    if glfw_window.is_null() {
+        return Err("Raylib did not return a native window handle".into());
+    }
+
+    let x11_window = unsafe { glfwGetX11Window(glfw_window.cast()) };
+    if x11_window == 0 {
+        return Err("GLFW did not return an X11 window id".into());
+    }
+
+    let (connection, _) =
+        x11rb::connect(None).map_err(|error| format!("Failed to connect to X11: {error}"))?;
+
+    let net_wm_state = intern_atom(&connection, b"_NET_WM_STATE")?;
+    let net_wm_state_skip_taskbar = intern_atom(&connection, b"_NET_WM_STATE_SKIP_TASKBAR")?;
+    let net_wm_state_skip_pager = intern_atom(&connection, b"_NET_WM_STATE_SKIP_PAGER")?;
+    let net_wm_state_above = intern_atom(&connection, b"_NET_WM_STATE_ABOVE")?;
+    let net_wm_window_type = intern_atom(&connection, b"_NET_WM_WINDOW_TYPE")?;
+    let net_wm_window_type_utility = intern_atom(&connection, b"_NET_WM_WINDOW_TYPE_UTILITY")?;
+
+    connection
+        .change_property32(
+            PropMode::REPLACE,
+            x11_window,
+            net_wm_state,
+            AtomEnum::ATOM,
+            &[
+                net_wm_state_skip_taskbar,
+                net_wm_state_skip_pager,
+                net_wm_state_above,
+            ],
+        )
+        .map_err(|error| format!("Failed to set _NET_WM_STATE: {error}"))?;
+
+    connection
+        .change_property32(
+            PropMode::REPLACE,
+            x11_window,
+            net_wm_window_type,
+            AtomEnum::ATOM,
+            &[net_wm_window_type_utility],
+        )
+        .map_err(|error| format!("Failed to set _NET_WM_WINDOW_TYPE: {error}"))?;
+
+    connection
+        .flush()
+        .map_err(|error| format!("Failed to flush X11 window hints: {error}"))?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn intern_atom<C: Connection>(connection: &C, name: &[u8]) -> Result<u32, String> {
+    connection
+        .intern_atom(false, name)
+        .map_err(|error| format!("Failed to request atom {}: {error}", String::from_utf8_lossy(name)))?
+        .reply()
+        .map_err(|error| format!("Failed to read atom {}: {error}", String::from_utf8_lossy(name)))
+        .map(|reply| reply.atom)
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    fn glfwGetX11Window(window: *mut c_void) -> c_ulong;
 }

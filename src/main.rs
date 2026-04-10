@@ -129,7 +129,8 @@ fn main() {
     let (screen_w, screen_h) = screenshot::detect_screen_size(&platform);
     info!("Overlay window size: {}x{}", screen_w, screen_h);
 
-    let (mut raylib_handle, raylib_thread) = renderer::create_overlay_window(screen_w, screen_h);
+    let (mut raylib_handle, raylib_thread) =
+        renderer::create_overlay_window(screen_w, screen_h, &platform);
 
     // Log actual Raylib window size (may differ from requested due to DPI scaling)
     let actual_w = raylib_handle.get_screen_width();
