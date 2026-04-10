@@ -75,6 +75,7 @@ pub struct OverlayRenderState {
     pub audio_power_level: f64,
     pub audio_power_history: Vec<f64>,
     pub speech_bubble_text: String,
+    pub speech_bubble_visible_char_progress: f32,
     pub speech_bubble_visible_char_count: usize,
     pub speech_bubble_opacity: f32,
     pub bubble_font: Option<Font>,
@@ -93,14 +94,84 @@ impl OverlayRenderState {
             audio_power_level: 0.0,
             audio_power_history: vec![0.02; 44],
             speech_bubble_text: String::new(),
+            speech_bubble_visible_char_progress: 0.0,
             speech_bubble_visible_char_count: 0,
             speech_bubble_opacity: 0.0,
             bubble_font: None,
         }
     }
 
+    /// Updates the overlay state for the current frame (animations, etc).
+    pub fn update(&mut self, delta_seconds: f64, current_mouse_position: Option<(f32, f32)>) {
+        // 1. Advance navigation animation if active
+        if self.navigation_mode == CursorNavigationMode::NavigatingToTarget {
+            self.advance_flight_animation(delta_seconds);
+        } else if self.navigation_mode == CursorNavigationMode::ReturningToMouse {
+            if let Some((mouse_x, mouse_y)) = current_mouse_position {
+                self.advance_return_to_mouse(delta_seconds, mouse_x, mouse_y);
+            }
+        }
+
+        // 2. Animate speech bubble typing and opacity
+        let is_visible = self.navigation_mode == CursorNavigationMode::PointingAtTarget
+            || self.navigation_mode == CursorNavigationMode::NavigatingToTarget;
+
+        if is_visible && !self.speech_bubble_text.is_empty() {
+            // Fade in opacity
+            self.speech_bubble_opacity = (self.speech_bubble_opacity + delta_seconds as f32 * 4.0).min(1.0);
+
+            // Typewriter effect: ~30 chars per second
+            if self.speech_bubble_visible_char_count < self.speech_bubble_text.len() {
+                let char_speed = 30.0; // chars per second
+                self.speech_bubble_visible_char_progress = (
+                    self.speech_bubble_visible_char_progress + delta_seconds as f32 * char_speed
+                )
+                .min(self.speech_bubble_text.len() as f32);
+                self.speech_bubble_visible_char_count =
+                    self.speech_bubble_visible_char_progress.floor() as usize;
+            }
+        } else if self.navigation_mode == CursorNavigationMode::ReturningToMouse
+            || self.navigation_mode == CursorNavigationMode::FollowingMouse
+        {
+            // Fade out opacity
+            self.speech_bubble_opacity = (self.speech_bubble_opacity - delta_seconds as f32 * 5.0).max(0.0);
+            if self.speech_bubble_opacity <= 0.0 {
+                self.speech_bubble_visible_char_progress = 0.0;
+                self.speech_bubble_visible_char_count = 0;
+            }
+        }
+    }
+
+    fn advance_return_to_mouse(&mut self, delta_seconds: f64, mouse_x: f32, mouse_y: f32) {
+        let direction_x = mouse_x - self.cursor_x;
+        let direction_y = mouse_y - self.cursor_y;
+        let distance = (direction_x * direction_x + direction_y * direction_y).sqrt();
+
+        if distance <= 6.0 {
+            self.cursor_x = mouse_x;
+            self.cursor_y = mouse_y;
+            self.navigation_mode = CursorNavigationMode::FollowingMouse;
+            self.cursor_rotation_degrees = design_system::cursor::DEFAULT_ROTATION_DEGREES;
+            self.cursor_scale = 1.0;
+            self.active_flight = None;
+            return;
+        }
+
+        let speed = 900.0f32;
+        let step = (speed * delta_seconds as f32).min(distance);
+        let unit_x = direction_x / distance.max(0.001);
+        let unit_y = direction_y / distance.max(0.001);
+        self.cursor_x += unit_x * step;
+        self.cursor_y += unit_y * step;
+        self.cursor_rotation_degrees = (unit_y as f64).atan2(unit_x as f64).to_degrees();
+
+        let pulse = (distance / 240.0).clamp(0.0, 1.0) as f64;
+        self.cursor_scale = 1.0 + pulse * 0.05;
+        self.active_flight = None;
+    }
+
     /// Advances the flight animation by one frame's worth of time.
-    pub fn advance_flight_animation(&mut self, delta_seconds: f64) {
+    fn advance_flight_animation(&mut self, delta_seconds: f64) {
         if let Some(flight) = &mut self.active_flight {
             flight.elapsed_seconds += delta_seconds;
             let progress = flight.linear_progress();
@@ -123,6 +194,7 @@ impl OverlayRenderState {
                 if is_return {
                     self.navigation_mode = CursorNavigationMode::FollowingMouse;
                     self.speech_bubble_opacity = 0.0;
+                    self.speech_bubble_visible_char_progress = 0.0;
                     self.speech_bubble_visible_char_count = 0;
                 } else {
                     self.navigation_mode = CursorNavigationMode::PointingAtTarget;
@@ -146,6 +218,7 @@ impl OverlayRenderState {
             false,
         ));
         self.speech_bubble_text = bubble_text;
+        self.speech_bubble_visible_char_progress = 0.0;
         self.speech_bubble_visible_char_count = 0;
         self.speech_bubble_opacity = 0.0;
     }
@@ -153,14 +226,11 @@ impl OverlayRenderState {
     /// Starts a bezier return flight from current position back to mouse.
     pub fn start_return_flight(&mut self, mouse_x: f32, mouse_y: f32) {
         self.navigation_mode = CursorNavigationMode::ReturningToMouse;
-        self.active_flight = Some(ActiveFlightAnimation::new(
-            self.cursor_x as f64,
-            self.cursor_y as f64,
-            mouse_x as f64,
-            mouse_y as f64,
-            true,
-        ));
+        self.cursor_rotation_degrees =
+            (mouse_y as f64 - self.cursor_y as f64).atan2(mouse_x as f64 - self.cursor_x as f64).to_degrees();
+        self.active_flight = None;
         self.speech_bubble_opacity = 0.0;
+        self.speech_bubble_visible_char_progress = 0.0;
         self.speech_bubble_visible_char_count = 0;
     }
 
@@ -168,6 +238,7 @@ impl OverlayRenderState {
     pub fn return_to_following_mouse(&mut self) {
         self.navigation_mode = CursorNavigationMode::FollowingMouse;
         self.speech_bubble_opacity = 0.0;
+        self.speech_bubble_visible_char_progress = 0.0;
         self.speech_bubble_visible_char_count = 0;
         self.cursor_rotation_degrees = design_system::cursor::DEFAULT_ROTATION_DEGREES;
         self.cursor_scale = 1.0;
@@ -185,9 +256,11 @@ pub fn draw_overlay_frame(
         VoiceState::Idle | VoiceState::Responding => {
             draw_cursor_triangle(draw_handle, render_state);
 
-            if render_state.navigation_mode == CursorNavigationMode::PointingAtTarget
-                && render_state.speech_bubble_opacity > 0.01
-            {
+            let bubble_visible = (render_state.navigation_mode == CursorNavigationMode::PointingAtTarget
+                || render_state.navigation_mode == CursorNavigationMode::NavigatingToTarget)
+                && render_state.speech_bubble_opacity > 0.01;
+
+            if bubble_visible {
                 draw_speech_bubble(draw_handle, render_state);
             }
         }
@@ -209,12 +282,10 @@ fn draw_cursor_triangle(
     let center_x = render_state.cursor_x + offset;
     let center_y = render_state.cursor_y + offset;
     let base_size = design_system::cursor::TRIANGLE_SIZE * render_state.cursor_scale as f32;
+    let glow_base_size = design_system::cursor::TRIANGLE_SIZE;
     let rotation_radians = render_state.cursor_rotation_degrees.to_radians() as f32;
     let cos_r = rotation_radians.cos();
     let sin_r = rotation_radians.sin();
-
-    let time = draw_handle.get_time();
-    let breath = (time * 1.5).sin() as f32 * 0.06 + 1.0;
 
     let is_pointing = render_state.navigation_mode == CursorNavigationMode::PointingAtTarget;
 
@@ -223,15 +294,31 @@ fn draw_cursor_triangle(
     let blue_g = (blue.1 * 255.0) as u8;
     let blue_b = (blue.2 * 255.0) as u8;
 
-    // Bloom: scaled-up copies of the triangle with decreasing alpha
-    let bloom_layers: &[(f32, u8)] = if is_pointing {
-        &[(2.8, 8), (2.4, 14), (2.0, 22), (1.6, 35), (1.3, 50)]
-    } else {
-        &[(2.0, 5), (1.6, 10), (1.3, 18)]
-    };
+    let halo_radius = 20.0;
+    let halo_alpha = if is_pointing { 52 } else { 42 };
+
+    draw_handle.draw_circle_gradient(
+        center_x as i32,
+        center_y as i32,
+        halo_radius,
+        Color::new(blue_r, blue_g, blue_b, halo_alpha),
+        Color::new(blue_r, blue_g, blue_b, 0),
+    );
+
+    if is_pointing {
+        draw_handle.draw_circle_gradient(
+            center_x as i32,
+            center_y as i32,
+            halo_radius * 0.72,
+            Color::new(255, 255, 255, 24),
+            Color::new(255, 255, 255, 0),
+        );
+    }
+
+    let bloom_layers: &[(f32, u8)] = &[(2.4, 6), (1.9, 12), (1.45, 24)];
 
     for &(scale_factor, alpha) in bloom_layers {
-        let bloom_size = base_size * scale_factor * breath;
+        let bloom_size = glow_base_size * scale_factor;
         let verts = triangle_vertices(bloom_size, center_x, center_y, cos_r, sin_r);
         draw_handle.draw_triangle(
             verts[0], verts[1], verts[2],
@@ -244,6 +331,21 @@ fn draw_cursor_triangle(
     draw_handle.draw_triangle(
         verts[0], verts[1], verts[2],
         Color::new(blue_r, blue_g, blue_b, 255),
+    );
+
+    let inner_glint = triangle_vertices(base_size * 0.62, center_x - 0.8, center_y - 1.0, cos_r, sin_r);
+    draw_handle.draw_triangle(
+        inner_glint[0],
+        inner_glint[1],
+        inner_glint[2],
+        Color::new(255, 255, 255, if is_pointing { 78 } else { 48 }),
+    );
+
+    draw_handle.draw_triangle_lines(
+        verts[0],
+        verts[1],
+        verts[2],
+        Color::new(220, 236, 255, if is_pointing { 240 } else { 170 }),
     );
 }
 
@@ -377,83 +479,204 @@ fn draw_speech_bubble(
         return;
     }
 
+    let screen_w = draw_handle.get_screen_width() as f32;
+    let screen_h = draw_handle.get_screen_height() as f32;
+
     let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
-    let bubble_x = render_state.cursor_x + offset + 12.0;
-    let bubble_y = render_state.cursor_y + offset - 12.0;
+    let cursor_center_x = render_state.cursor_x + offset;
+    let cursor_center_y = render_state.cursor_y + offset;
+
     let font_size = 18.0f32;
     let spacing = 1.0f32;
-    let pad_h = 14.0f32;
-    let pad_v = 10.0f32;
+    let pad_h = 15.0f32;
+    let pad_v = 11.0f32;
+    let line_gap = 4.0f32;
     let opacity = render_state.speech_bubble_opacity;
+    let max_text_width = (screen_w * 0.28).clamp(180.0, 320.0);
 
     let blue = design_system::colors::OVERLAY_CURSOR_BLUE;
     let blue_r = (blue.0 * 255.0) as u8;
     let blue_g = (blue.1 * 255.0) as u8;
     let blue_b = (blue.2 * 255.0) as u8;
 
-    // Measure text with custom font or fallback
-    let text_size = if let Some(ref font) = render_state.bubble_font {
-        font.measure_text(&visible_text, font_size, spacing)
-    } else {
-        Vector2::new(
-            draw_handle.measure_text(&visible_text, font_size as i32) as f32,
+    let wrapped_lines = wrap_text_lines(
+        draw_handle,
+        render_state.bubble_font.as_ref(),
+        &visible_text,
+        font_size,
+        spacing,
+        max_text_width,
+    );
+    if wrapped_lines.is_empty() {
+        return;
+    }
+
+    let mut text_width = 0.0f32;
+    for line in &wrapped_lines {
+        text_width = text_width.max(measure_text_width(
+            draw_handle,
+            render_state.bubble_font.as_ref(),
+            line,
             font_size,
-        )
-    };
-
-    let bubble_width = text_size.x + pad_h * 2.0;
-    let bubble_height = font_size + pad_v * 2.0;
-    let corner_roundness = 0.5;
-    let corner_segments = 10;
-
-    // Shadow
-    let shadow_alpha = (opacity * 60.0) as u8;
-    draw_handle.draw_rectangle_rounded(
-        Rectangle::new(bubble_x + 2.0, bubble_y + 3.0, bubble_width + 2.0, bubble_height + 2.0),
-        corner_roundness, corner_segments,
-        Color::new(0, 0, 0, shadow_alpha),
-    );
-
-    // Glass background — triangle's blue color, semi-transparent
-    let bg_alpha = (opacity * 160.0) as u8;
-    draw_handle.draw_rectangle_rounded(
-        Rectangle::new(bubble_x, bubble_y, bubble_width, bubble_height),
-        corner_roundness, corner_segments,
-        Color::new(blue_r / 3, blue_g / 3, blue_b, bg_alpha),
-    );
-
-    // Subtle lighter inner layer for glass depth
-    let inner_alpha = (opacity * 40.0) as u8;
-    draw_handle.draw_rectangle_rounded(
-        Rectangle::new(bubble_x + 1.0, bubble_y + 1.0, bubble_width - 2.0, bubble_height * 0.45),
-        corner_roundness, corner_segments,
-        Color::new(180, 200, 255, inner_alpha),
-    );
-
-    // Border — thin blue outline
-    let border_alpha = (opacity * 80.0) as u8;
-    draw_handle.draw_rectangle_rounded_lines(
-        Rectangle::new(bubble_x, bubble_y, bubble_width, bubble_height),
-        corner_roundness, corner_segments,
-        Color::new(blue_r, blue_g, blue_b, border_alpha),
-    );
-
-    // Text — white for contrast on blue glass
-    let text_alpha = (opacity * 255.0) as u8;
-    let text_color = Color::new(255, 255, 255, text_alpha);
-    let text_pos = Vector2::new(bubble_x + pad_h, bubble_y + pad_v);
-
-    if let Some(ref font) = render_state.bubble_font {
-        draw_handle.draw_text_ex(font, &visible_text, text_pos, font_size, spacing, text_color);
+            spacing,
+        ));
+    }
+    let line_height = if let Some(ref font) = render_state.bubble_font {
+        font.base_size() as f32 * (font_size / font.base_size() as f32)
     } else {
-        draw_handle.draw_text(
-            &visible_text,
-            text_pos.x as i32,
-            text_pos.y as i32,
-            font_size as i32,
-            text_color,
+        font_size
+    };
+    let text_height =
+        wrapped_lines.len() as f32 * line_height + (wrapped_lines.len().saturating_sub(1) as f32 * line_gap);
+
+    let bubble_width = text_width + pad_h * 2.0;
+    let bubble_height = text_height + pad_v * 2.0;
+
+    let appear = opacity.clamp(0.0, 1.0);
+    let rise_offset = (1.0 - appear) * 8.0;
+    let mut bubble_x = cursor_center_x + 12.0;
+    let mut bubble_y = cursor_center_y - bubble_height - 10.0 + rise_offset;
+
+    if bubble_x + bubble_width > screen_w - 20.0 {
+        bubble_x = cursor_center_x - bubble_width - 12.0;
+    }
+    if bubble_y < 20.0 {
+        bubble_y = cursor_center_y + 12.0 - rise_offset * 0.35;
+    }
+    if bubble_y + bubble_height > screen_h - 20.0 {
+        bubble_y = (screen_h - bubble_height - 20.0).max(20.0);
+    }
+
+    let corner_radius = 20.0f32;
+    let roundness = (corner_radius / (bubble_height.min(bubble_width) / 2.0)).clamp(0.0, 1.0);
+    let corner_segments = 14;
+
+    let shadow_alpha = (opacity * 22.0) as u8;
+    for i in 1..=2 {
+        let spread = i as f32 * 2.0;
+        draw_handle.draw_rectangle_rounded(
+            Rectangle::new(
+                bubble_x + spread * 0.4,
+                bubble_y + spread * 0.8 + 1.0,
+                bubble_width,
+                bubble_height,
+            ),
+            roundness,
+            corner_segments,
+            Color::new(0, 0, 0, (shadow_alpha / i) as u8),
         );
     }
+
+    let bg_alpha = (opacity * 236.0) as u8;
+    let bubble_blue = Color::new(
+        ((blue_r as f32 * 0.60) + 12.0) as u8,
+        ((blue_g as f32 * 0.60) + 16.0) as u8,
+        ((blue_b as f32 * 0.60) + 18.0) as u8,
+        bg_alpha,
+    );
+    draw_handle.draw_rectangle_rounded(
+        Rectangle::new(bubble_x, bubble_y, bubble_width, bubble_height),
+        roundness,
+        corner_segments,
+        bubble_blue,
+    );
+
+    draw_handle.draw_rectangle_lines_ex(
+        Rectangle::new(bubble_x + 1.0, bubble_y + 1.0, bubble_width - 2.0, bubble_height - 2.0),
+        1.0,
+        Color::new(255, 255, 255, (opacity * 8.0) as u8),
+    );
+
+    let text_alpha = (opacity * 255.0) as u8;
+    let text_shadow = Color::new(10, 18, 34, (opacity * 40.0) as u8);
+    let text_color = Color::new(255, 255, 255, text_alpha);
+    for (index, line) in wrapped_lines.iter().enumerate() {
+        let text_pos = Vector2::new(
+            bubble_x + pad_h,
+            bubble_y + pad_v + index as f32 * (line_height + line_gap),
+        );
+
+        if let Some(ref font) = render_state.bubble_font {
+            draw_handle.draw_text_ex(
+                font,
+                line,
+                Vector2::new(text_pos.x, text_pos.y + 1.0),
+                font_size,
+                spacing,
+                text_shadow,
+            );
+            draw_handle.draw_text_ex(font, line, text_pos, font_size, spacing, text_color);
+        } else {
+            draw_handle.draw_text(
+                line,
+                text_pos.x as i32,
+                (text_pos.y + 1.0) as i32,
+                font_size as i32,
+                text_shadow,
+            );
+            draw_handle.draw_text(
+                line,
+                text_pos.x as i32,
+                text_pos.y as i32,
+                font_size as i32,
+                text_color,
+            );
+        }
+    }
+}
+
+fn measure_text_width(
+    draw_handle: &RaylibDrawHandle,
+    font: Option<&Font>,
+    text: &str,
+    font_size: f32,
+    spacing: f32,
+) -> f32 {
+    if let Some(font) = font {
+        font.measure_text(text, font_size, spacing).x
+    } else {
+        draw_handle.measure_text(text, font_size as i32) as f32
+    }
+}
+
+fn wrap_text_lines(
+    draw_handle: &RaylibDrawHandle,
+    font: Option<&Font>,
+    text: &str,
+    font_size: f32,
+    spacing: f32,
+    max_width: f32,
+) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in words {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+
+        if !current.is_empty()
+            && measure_text_width(draw_handle, font, &candidate, font_size, spacing) > max_width
+        {
+            lines.push(current);
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
 }
 
 /// Converts a design system color tuple to a Raylib Color.
@@ -467,14 +690,34 @@ fn ds_color(color_tuple: (f32, f32, f32, f32)) -> Color {
 }
 
 /// System font paths to try for the speech bubble (in priority order).
+#[cfg(target_os = "macos")]
 const FONT_PATHS: &[&str] = &[
-    "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
-    "/usr/share/fonts/google-droid-sans-fonts/DroidSans.ttf",
-    "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-    "C:\\Windows\\Fonts\\segoeui.ttf",
-    "/System/Library/Fonts/SFNSText.ttf",
+    "/System/Library/Fonts/SFNS.ttf",
+    "/System/Library/Fonts/HelveticaNeue.ttc",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Verdana.ttf",
 ];
+
+#[cfg(target_os = "windows")]
+const FONT_PATHS: &[&str] = &[
+    "C:\\Windows\\Fonts\\segoeui.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+    "C:\\Windows\\Fonts\\verdana.ttf",
+];
+
+#[cfg(target_os = "linux")]
+const FONT_PATHS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
+    "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
+];
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+const FONT_PATHS: &[&str] = &[];
 
 /// Loads the best available system font for speech bubbles.
 /// Returns None if no font could be loaded (falls back to Raylib default).

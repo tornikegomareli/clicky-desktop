@@ -81,7 +81,17 @@ fn main() {
         LlmProvider::Disabled
     };
 
-    if !transcription_enabled {
+    // Simulation mode: bypasses transcription + LLM + TTS, sends fake
+    // responses so we can polish the overlay animations without API calls.
+    // On by default — set CLICKY_SIMULATE=0 to use real APIs.
+    let simulation_mode = std::env::var("CLICKY_SIMULATE")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if simulation_mode {
+        info!("SIMULATION MODE enabled — skipping real API calls");
+    }
+
+    if !transcription_enabled && !simulation_mode {
         log::warn!("Set ASSEMBLYAI_API_KEY or CLICKY_WORKER_URL to enable transcription");
     } else if assemblyai_api_key.is_some() {
         info!("Transcription: direct AssemblyAI API");
@@ -238,7 +248,41 @@ fn main() {
                         info!("Push-to-talk: RELEASED");
                         mic_capture.stop();
 
-                        if let Some(cancel_tx) = active_session_cancel.take() {
+                        if simulation_mode {
+                            // Simulation: skip transcription, go straight to Processing
+                            // and fire a fake LLM response after a short delay
+                            if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
+                                voice_state = new_state;
+                                render_state.voice_state = voice_state;
+                            }
+                            processing_since = Some(std::time::Instant::now());
+
+                            let ui_tx = ui_event_tx.clone();
+                            let sw = screen_w;
+                            let sh = screen_h;
+                            tokio_rt.spawn(async move {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+                                // Random target within center 60% of screen
+                                let margin_x = sw as f64 * 0.2;
+                                let margin_y = sh as f64 * 0.2;
+                                let range_x = sw as f64 * 0.6;
+                                let range_y = sh as f64 * 0.6;
+                                let rand_seed = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .subsec_nanos();
+                                let target_x = margin_x + (rand_seed as f64 % range_x);
+                                let target_y = margin_y + ((rand_seed / 7) as f64 % range_y);
+
+                                let _ = ui_tx.send(UiEvent::LlmResponse {
+                                    spoken_text: "simulated response for ui testing".to_string(),
+                                    pointing_instruction: None,
+                                    display_infos: vec![],
+                                    computer_use_global_coordinate: Some((target_x, target_y)),
+                                });
+                            });
+                        } else if let Some(cancel_tx) = active_session_cancel.take() {
                             if let Some(new_state) = voice_state.apply(VoiceStateTransition::HotkeyReleased) {
                                 voice_state = new_state;
                                 render_state.voice_state = voice_state;
@@ -383,8 +427,6 @@ fn main() {
                     let is_pointing = computer_use_global_coordinate.is_some()
                         || pointing_instruction.is_some();
                     render_state.speech_bubble_text = core::bubble_text::pick_bubble_phrase(is_pointing);
-                    render_state.speech_bubble_visible_char_count = render_state.speech_bubble_text.len();
-                    render_state.speech_bubble_opacity = 1.0;
 
                     responding_since = Some(std::time::Instant::now());
                     claude_pipeline_active = false;
@@ -481,22 +523,18 @@ fn main() {
             }
         }
 
+        let mouse_position = raylib_handle.get_mouse_position();
+        cursor_tracker.update_from_window(mouse_position.x, mouse_position.y);
+        let current_mouse_position = cursor_tracker.get_position();
+
         // Update cursor position
         if render_state.navigation_mode == CursorNavigationMode::FollowingMouse {
-            let mouse_position = raylib_handle.get_mouse_position();
-            cursor_tracker.update_from_window(mouse_position.x, mouse_position.y);
-
-            let (mx, my) = cursor_tracker.get_position();
-            render_state.cursor_x = mx;
-            render_state.cursor_y = my;
+            render_state.cursor_x = current_mouse_position.0;
+            render_state.cursor_y = current_mouse_position.1;
         }
 
-        // Advance flight animation if active (forward or return)
-        if render_state.navigation_mode == CursorNavigationMode::NavigatingToTarget
-            || render_state.navigation_mode == CursorNavigationMode::ReturningToMouse
-        {
-            render_state.advance_flight_animation(delta_seconds);
-        }
+        // Update overlay state (animations, typing, flight)
+        render_state.update(delta_seconds, Some(current_mouse_position));
 
         // Draw the overlay
         let mut draw_handle = raylib_handle.begin_drawing(&raylib_thread);

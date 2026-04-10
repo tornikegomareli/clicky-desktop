@@ -9,7 +9,6 @@
 ///   Linux/X11      → Raylib get_mouse_position (X11 delivers motion to shaped windows)
 ///   Windows        → Win32 GetCursorPos
 ///   Fallback       → Raylib get_mouse_position (best effort)
-
 pub(crate) mod fallback;
 
 #[cfg(target_os = "linux")]
@@ -18,7 +17,7 @@ mod evdev_tracker;
 #[cfg(target_os = "windows")]
 mod win32_tracker;
 
-use crate::app::platform::{PlatformInfo, OperatingSystem, DisplayServer};
+use crate::app::platform::{DisplayServer, OperatingSystem, PlatformInfo};
 
 /// Trait for reading global cursor position, regardless of platform.
 pub trait CursorTracker: Send {
@@ -33,18 +32,26 @@ pub trait CursorTracker: Send {
 
 /// Creates the best cursor tracker for the current platform.
 /// Returns None only if no tracking method is available at all.
-pub fn create(platform: &PlatformInfo, screen_width: i32, screen_height: i32) -> Box<dyn CursorTracker> {
+pub fn create(
+    platform: &PlatformInfo,
+    screen_width: i32,
+    screen_height: i32,
+) -> Box<dyn CursorTracker> {
     match platform.os {
         #[cfg(target_os = "linux")]
         OperatingSystem::Linux => {
             // On Wayland, Raylib can't get mouse position with passthrough enabled.
             // Use evdev to read directly from input devices.
             if platform.display_server == Some(DisplayServer::Wayland) {
-                if let Some(tracker) = evdev_tracker::EvdevCursorTracker::new(screen_width, screen_height) {
+                if let Some(tracker) =
+                    evdev_tracker::EvdevCursorTracker::new(screen_width, screen_height)
+                {
                     log::info!("Cursor tracking: evdev (Wayland)");
                     return Box::new(tracker);
                 }
-                log::warn!("evdev unavailable on Wayland — falling back to Raylib (cursor may not track)");
+                log::warn!(
+                    "evdev unavailable on Wayland — falling back to Raylib (cursor may not track)"
+                );
             } else {
                 log::info!("Cursor tracking: Raylib (X11)");
             }

@@ -1,11 +1,9 @@
 pub mod platform;
 pub mod state_machine;
-
-use crate::api;
+use log::info;
 use platform::PlatformInfo;
 use state_machine::{VoiceState, VoiceStateTransition};
 use tokio::sync::mpsc;
-use log::info;
 
 /// Central application state
 /// Owns the voice state machine, API clients, conversation history, and
@@ -27,7 +25,9 @@ impl AppState {
             platform,
             voice_state: VoiceState::Idle,
             conversation_history: crate::core::conversation::ConversationHistory::new(),
-            claude_api_base_url: String::from("https://your-worker-name.your-subdomain.workers.dev"),
+            claude_api_base_url: String::from(
+                "https://your-worker-name.your-subdomain.workers.dev",
+            ),
             voice_state_sender,
             voice_state_receiver,
         }
