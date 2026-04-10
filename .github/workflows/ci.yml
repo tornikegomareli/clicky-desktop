@@ -28,8 +28,10 @@ jobs:
             libxcursor-dev \
             libxinerama-dev \
             libgl1-mesa-dev \
+            libgbm-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            libxdo-dev \
             libudev-dev \
             libssl-dev
 
@@ -74,8 +76,10 @@ jobs:
             libxcursor-dev \
             libxinerama-dev \
             libgl1-mesa-dev \
+            libgbm-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            libxdo-dev \
             libudev-dev \
             libssl-dev
 
@@ -83,10 +87,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Validate build
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            cargo check
-          else
-            cargo build --release
-          fi
+      - name: Validate Linux release build
+        if: runner.os == 'Linux'
+        run: cargo build --release
+
+      - name: Validate Windows build
+        if: runner.os == 'Windows'
+        run: cargo check
