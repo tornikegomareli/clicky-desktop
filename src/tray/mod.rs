@@ -5,7 +5,7 @@
 use tray_icon::{TrayIcon, TrayIconBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::Icon;
-use log::{info, error};
+use log::info;
 
 /// Events emitted by the system tray menu.
 #[derive(Debug, Clone)]
@@ -25,9 +25,14 @@ pub struct ClickyTrayIcon {
 
 impl ClickyTrayIcon {
     /// Creates and shows the system tray icon with a context menu.
-    pub fn new() -> Result<Self, String> {
+    pub fn new(needs_onboarding: bool) -> Result<Self, String> {
         let toggle_overlay_item = MenuItem::new("Toggle Overlay", true, None);
-        let settings_item = MenuItem::new("Settings", true, None);
+        let settings_label = if needs_onboarding {
+            "Open Setup"
+        } else {
+            "Settings"
+        };
+        let settings_item = MenuItem::new(settings_label, true, None);
         let quit_item = MenuItem::new("Quit", true, None);
 
         let toggle_overlay_menu_item_id = toggle_overlay_item.id().clone();
