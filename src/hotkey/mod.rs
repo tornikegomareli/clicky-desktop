@@ -11,6 +11,7 @@ mod evdev_hotkey;
 mod global_hotkey_backend;
 
 use crate::app::platform::{PlatformInfo, OperatingSystem, DisplayServer};
+use crate::config::PushToTalkHotkey;
 
 /// Push-to-talk shortcut transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,15 +26,18 @@ pub trait HotkeyBackend: Send {
 }
 
 /// Creates the best hotkey backend for the current platform.
-pub fn create(platform: &PlatformInfo) -> Option<Box<dyn HotkeyBackend>> {
+pub fn create(platform: &PlatformInfo, shortcut: PushToTalkHotkey) -> Option<Box<dyn HotkeyBackend>> {
     match platform.os {
         #[cfg(target_os = "linux")]
         OperatingSystem::Linux => {
             if platform.display_server == Some(DisplayServer::Wayland) {
                 // X11 XGrabKey doesn't work on XWayland — use evdev
-                match evdev_hotkey::EvdevHotkeyManager::new() {
+                match evdev_hotkey::EvdevHotkeyManager::new(shortcut) {
                     Some(manager) => {
-                        log::info!("Hotkey: evdev (Wayland) — hold Ctrl+` to talk");
+                        log::info!(
+                            "Hotkey: evdev (Wayland) — hold {} to talk",
+                            shortcut.display_name()
+                        );
                         return Some(Box::new(manager));
                     }
                     None => {
@@ -42,9 +46,12 @@ pub fn create(platform: &PlatformInfo) -> Option<Box<dyn HotkeyBackend>> {
                 }
             }
             // X11 or fallback
-            match global_hotkey_backend::GlobalHotkeyManager::new() {
+            match global_hotkey_backend::GlobalHotkeyManager::new(shortcut) {
                 Ok(manager) => {
-                    log::info!("Hotkey: global-hotkey (X11) — Ctrl+Space push-to-talk");
+                    log::info!(
+                        "Hotkey: global-hotkey (X11) — {} push-to-talk",
+                        shortcut.display_name()
+                    );
                     Some(Box::new(manager))
                 }
                 Err(err) => {
@@ -56,9 +63,12 @@ pub fn create(platform: &PlatformInfo) -> Option<Box<dyn HotkeyBackend>> {
 
         #[allow(unreachable_patterns)]
         _ => {
-            match global_hotkey_backend::GlobalHotkeyManager::new() {
+            match global_hotkey_backend::GlobalHotkeyManager::new(shortcut) {
                 Ok(manager) => {
-                    log::info!("Hotkey: global-hotkey — Ctrl+Space push-to-talk");
+                    log::info!(
+                        "Hotkey: global-hotkey — {} push-to-talk",
+                        shortcut.display_name()
+                    );
                     Some(Box::new(manager))
                 }
                 Err(err) => {

@@ -8,18 +8,19 @@
 use evdev::{Device, InputEventKind, Key};
 use std::sync::mpsc;
 use super::{HotkeyBackend, PushToTalkTransition};
+use crate::config::PushToTalkHotkey;
 
 pub struct EvdevHotkeyManager {
     event_rx: mpsc::Receiver<PushToTalkTransition>,
 }
 
 impl EvdevHotkeyManager {
-    pub fn new() -> Option<Self> {
+    pub fn new(shortcut: PushToTalkHotkey) -> Option<Self> {
         let device = find_keyboard_device()?;
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
-            run_hotkey_loop(device, tx);
+            run_hotkey_loop(device, tx, shortcut);
         });
 
         Some(Self { event_rx: rx })
@@ -38,14 +39,18 @@ impl HotkeyBackend for EvdevHotkeyManager {
     }
 }
 
-fn run_hotkey_loop(mut device: Device, tx: mpsc::Sender<PushToTalkTransition>) {
+fn run_hotkey_loop(
+    mut device: Device,
+    tx: mpsc::Sender<PushToTalkTransition>,
+    shortcut: PushToTalkHotkey,
+) {
     log::info!(
         "evdev hotkey listener started on: {}",
         device.name().unwrap_or("unknown")
     );
 
     let mut ctrl_held = false;
-    let mut grave_held = false;
+    let mut trigger_held = false;
     let mut combo_active = false;
 
     loop {
@@ -59,13 +64,16 @@ fn run_hotkey_loop(mut device: Device, tx: mpsc::Sender<PushToTalkTransition>) {
                             Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => {
                                 ctrl_held = pressed;
                             }
-                            Key::KEY_GRAVE => {
-                                grave_held = pressed;
+                            Key::KEY_GRAVE if shortcut == PushToTalkHotkey::CtrlGrave => {
+                                trigger_held = pressed;
+                            }
+                            Key::KEY_SPACE if shortcut == PushToTalkHotkey::CtrlSpace => {
+                                trigger_held = pressed;
                             }
                             _ => continue,
                         }
 
-                        let both_held = ctrl_held && grave_held;
+                        let both_held = ctrl_held && trigger_held;
 
                         if both_held && !combo_active {
                             combo_active = true;
@@ -91,6 +99,7 @@ fn find_keyboard_device() -> Option<Device> {
         if let Some(keys) = device.supported_keys() {
             if keys.contains(Key::KEY_LEFTCTRL)
                 && keys.contains(Key::KEY_GRAVE)
+                && keys.contains(Key::KEY_SPACE)
                 && keys.contains(Key::KEY_A)
             {
                 log::info!(

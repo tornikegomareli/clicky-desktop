@@ -4,6 +4,7 @@
 use global_hotkey::{GlobalHotKeyManager as CrateManager, GlobalHotKeyEvent, HotKeyState};
 use global_hotkey::hotkey::{HotKey, Modifiers, Code};
 use super::{HotkeyBackend, PushToTalkTransition};
+use crate::config::PushToTalkHotkey;
 
 pub struct GlobalHotkeyManager {
     _manager: CrateManager,
@@ -14,14 +15,18 @@ pub struct GlobalHotkeyManager {
 unsafe impl Send for GlobalHotkeyManager {}
 
 impl GlobalHotkeyManager {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(shortcut: PushToTalkHotkey) -> Result<Self, String> {
         let manager = CrateManager::new()
             .map_err(|e| format!("Failed to create hotkey manager: {}", e))?;
 
-        let hotkey = HotKey::new(Some(Modifiers::CONTROL), Code::Space);
+        let key_code = match shortcut {
+            PushToTalkHotkey::CtrlSpace => Code::Space,
+            PushToTalkHotkey::CtrlGrave => Code::Backquote,
+        };
+        let hotkey = HotKey::new(Some(Modifiers::CONTROL), key_code);
 
         manager.register(hotkey)
-            .map_err(|e| format!("Failed to register Ctrl+Space: {}", e))?;
+            .map_err(|e| format!("Failed to register {}: {}", shortcut.display_name(), e))?;
 
         Ok(Self { _manager: manager })
     }

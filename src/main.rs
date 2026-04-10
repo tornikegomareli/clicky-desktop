@@ -8,6 +8,8 @@ mod hotkey;
 mod audio;
 mod screenshot;
 mod cursor_tracker;
+mod config;
+mod autostart;
 
 use app::state_machine::{VoiceState, VoiceStateTransition, PointingInstruction};
 use audio::UiEvent;
@@ -20,12 +22,11 @@ use overlay::renderer::{self, CursorNavigationMode, OverlayRenderState};
 use tray::TrayMenuEvent;
 use log::info;
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, PartialEq)]
 enum LlmProvider {
     Anthropic,
-    OpenAi,
-    WorkerProxy,
     Disabled,
 }
 
@@ -33,6 +34,8 @@ fn main() {
     // Load .env file if present (ignored if missing)
     let _ = dotenvy::dotenv();
     env_logger::init();
+
+    let mut app_config = config::AppConfig::load();
 
     let platform = app::platform::detect();
     info!("Clicky Desktop starting on {}", platform);
@@ -56,55 +59,33 @@ fn main() {
     // Active transcription session cancel handle
     let mut active_session_cancel: Option<tokio::sync::oneshot::Sender<()>> = None;
 
-    // API configuration
-    let assemblyai_api_key = std::env::var("ASSEMBLYAI_API_KEY").ok().filter(|s| !s.is_empty());
-    let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty());
-    let openai_api_key = std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty());
-    let worker_base_url = std::env::var("CLICKY_WORKER_URL").ok().filter(|s| !s.is_empty());
-    let elevenlabs_api_key = std::env::var("ELEVENLABS_API_KEY").ok().filter(|s| !s.is_empty());
-    let elevenlabs_voice_id = std::env::var("ELEVENLABS_VOICE_ID").ok().filter(|s| !s.is_empty());
-    let transcription_enabled = assemblyai_api_key.is_some() || worker_base_url.is_some();
-    let tts_enabled = elevenlabs_api_key.is_some() || worker_base_url.is_some();
-
-    // LLM provider: Anthropic (preferred) > OpenAI > Worker proxy > disabled
-    let llm_provider = if anthropic_api_key.is_some() {
-        info!("LLM: direct Anthropic API (Claude)");
-        LlmProvider::Anthropic
-    } else if openai_api_key.is_some() {
-        info!("LLM: direct OpenAI API");
-        LlmProvider::OpenAi
-    } else if worker_base_url.is_some() {
-        info!("LLM: via worker proxy (Claude)");
-        LlmProvider::WorkerProxy
-    } else {
-        log::warn!("Set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable AI responses");
-        LlmProvider::Disabled
-    };
-
-    // Simulation mode: bypasses transcription + LLM + TTS, sends fake
-    // responses so we can polish the overlay animations without API calls.
-    // On by default — set CLICKY_SIMULATE=0 to use real APIs.
+    #[cfg(debug_assertions)]
     let simulation_mode = std::env::var("CLICKY_SIMULATE")
         .map(|v| v != "0")
-        .unwrap_or(true);
+        .unwrap_or(false);
+    #[cfg(not(debug_assertions))]
+    let simulation_mode = false;
+
+    #[cfg(debug_assertions)]
+    let force_setup_window = std::env::var("CLICKY_FORCE_SETUP_WINDOW")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    #[cfg(not(debug_assertions))]
+    let force_setup_window = false;
+
     if simulation_mode {
         info!("SIMULATION MODE enabled — skipping real API calls");
     }
 
-    if !transcription_enabled && !simulation_mode {
-        log::warn!("Set ASSEMBLYAI_API_KEY or CLICKY_WORKER_URL to enable transcription");
-    } else if assemblyai_api_key.is_some() {
-        info!("Transcription: direct AssemblyAI API");
-    } else {
-        info!("Transcription: via worker proxy");
+    if let Some(config_path) = config::config_file_path() {
+        info!("Config file path: {}", config_path.display());
     }
 
-    if !tts_enabled {
-        log::warn!("Set ELEVENLABS_API_KEY or CLICKY_WORKER_URL to enable TTS");
-    } else if elevenlabs_api_key.is_some() {
-        info!("TTS: direct ElevenLabs API");
-    } else {
-        info!("TTS: via worker proxy");
+    log_runtime_config_state(&app_config, simulation_mode);
+
+    if force_setup_window || app_config.needs_onboarding() {
+        log::warn!("Setup incomplete: use the tray menu to open setup and add provider keys");
+        panel::open_settings_window(app_config.clone(), true);
     }
 
     // Reusable HTTP client for API calls
@@ -126,7 +107,7 @@ fn main() {
     };
 
     // Initialize system tray icon
-    let tray_icon = match tray::ClickyTrayIcon::new() {
+    let tray_icon = match tray::ClickyTrayIcon::new(app_config.needs_onboarding()) {
         Ok(tray) => {
             info!("System tray icon ready");
             Some(tray)
@@ -138,7 +119,9 @@ fn main() {
     };
 
     // Initialize global hotkey (platform-specific backend)
-    let hotkey_manager = hotkey::create(&platform);
+    let mut hotkey_manager = hotkey::create(&platform, app_config.push_to_talk_hotkey);
+    let mut last_config_poll_at = Instant::now();
+    let mut last_config_modified_at = config::config_file_modified_at();
 
     // Detect actual screen size for the overlay window
     let (screen_w, screen_h) = screenshot::detect_screen_size(&platform);
@@ -172,6 +155,39 @@ fn main() {
     while !raylib_handle.window_should_close() {
         frame_count += 1;
         let delta_seconds = raylib_handle.get_frame_time() as f64;
+        let assemblyai_api_key = app_config.assemblyai_api_key.clone();
+        let anthropic_api_key = app_config.anthropic_api_key.clone();
+        let elevenlabs_api_key = app_config.elevenlabs_api_key.clone();
+        let elevenlabs_voice_id = app_config.elevenlabs_voice_id.clone();
+        let transcription_enabled = assemblyai_api_key.is_some();
+        let tts_enabled = elevenlabs_api_key.is_some();
+        let llm_provider = if anthropic_api_key.is_some() {
+            LlmProvider::Anthropic
+        } else {
+            LlmProvider::Disabled
+        };
+
+        if last_config_poll_at.elapsed() >= Duration::from_millis(750) {
+            last_config_poll_at = Instant::now();
+            let current_modified_at = config::config_file_modified_at();
+            if current_modified_at != last_config_modified_at {
+                last_config_modified_at = current_modified_at;
+                let reloaded_config = config::AppConfig::load();
+                let hotkey_changed =
+                    reloaded_config.push_to_talk_hotkey != app_config.push_to_talk_hotkey;
+                app_config = reloaded_config;
+                log::info!("Reloaded settings from config file");
+                log_runtime_config_state(&app_config, simulation_mode);
+
+                if hotkey_changed {
+                    hotkey_manager = hotkey::create(&platform, app_config.push_to_talk_hotkey);
+                    log::info!(
+                        "Applied new push-to-talk hotkey: {}",
+                        app_config.push_to_talk_hotkey.display_name()
+                    );
+                }
+            }
+        }
 
         // Poll system tray menu events
         if let Some(tray) = &tray_icon {
@@ -186,6 +202,11 @@ fn main() {
                     }
                     TrayMenuEvent::OpenSettings => {
                         info!("Open settings requested");
+                        let latest_config = config::AppConfig::load();
+                        panel::open_settings_window(
+                            latest_config.clone(),
+                            latest_config.needs_onboarding(),
+                        );
                     }
                 }
             }
@@ -230,8 +251,7 @@ fn main() {
                                         active_session_cancel = Some(cancel_tx);
                                         let ui_tx = ui_event_tx.clone();
                                         let api_key = assemblyai_api_key.clone();
-                                        let worker_url = worker_base_url.clone();
-                                        tokio_rt.spawn(run_transcription_bridge(audio_rx, ui_tx, api_key, worker_url, cancel_rx));
+                                        tokio_rt.spawn(run_transcription_bridge(audio_rx, ui_tx, api_key, cancel_rx));
                                     }
                                 }
                                 Err(err) => {
@@ -342,8 +362,6 @@ fn main() {
                         let ui_tx = ui_event_tx.clone();
                         let provider = llm_provider.clone();
                         let anthro_key = anthropic_api_key.clone();
-                        let oai_key = openai_api_key.clone();
-                        let worker_url = worker_base_url.clone();
                         let el_key = elevenlabs_api_key.clone();
                         let el_voice = elevenlabs_voice_id.clone();
                         let client = http_client.clone();
@@ -351,7 +369,7 @@ fn main() {
 
                         let plat = platform.clone();
                         tokio_rt.spawn(run_llm_pipeline(
-                            client, provider, anthro_key, oai_key, worker_url,
+                            client, provider, anthro_key,
                             el_key, el_voice, tts_enabled,
                             transcript, cursor_pos, history, plat, ui_tx,
                         ));
@@ -549,13 +567,12 @@ async fn run_transcription_bridge(
     audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
     ui_tx: std_mpsc::Sender<UiEvent>,
     api_key: Option<String>,
-    worker_url: Option<String>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     let http_client = reqwest::Client::new();
 
     let token = match api::assemblyai::fetch_temporary_streaming_token(
-        &http_client, api_key.as_deref(), worker_url.as_deref(),
+        &http_client, api_key.as_deref(), None,
     ).await {
         Ok(t) => t,
         Err(e) => {
@@ -631,8 +648,6 @@ async fn run_llm_pipeline(
     http_client: reqwest::Client,
     provider: LlmProvider,
     anthropic_api_key: Option<String>,
-    openai_api_key: Option<String>,
-    worker_base_url: Option<String>,
     elevenlabs_api_key: Option<String>,
     elevenlabs_voice_id: Option<String>,
     tts_enabled: bool,
@@ -691,7 +706,7 @@ async fn run_llm_pipeline(
     let system_prompt = api::claude::COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT;
 
     let result: Result<String, String> = match provider {
-        LlmProvider::Anthropic | LlmProvider::WorkerProxy => {
+        LlmProvider::Anthropic => {
             let user_content = api::claude::build_vision_message_content(&transcript, &capture.screenshots);
             messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
@@ -701,20 +716,7 @@ async fn run_llm_pipeline(
             api::claude::stream_claude_response(
                 &http_client,
                 anthropic_api_key.as_deref(),
-                worker_base_url.as_deref(),
-                model, system_prompt, messages, |_| {},
-            ).await.map_err(|e| e.to_string())
-        }
-        LlmProvider::OpenAi => {
-            let user_content = api::openai::build_vision_message_content(&transcript, &capture.screenshots);
-            messages.push(serde_json::json!({"role": "user", "content": user_content}));
-
-            let model = api::openai::DEFAULT_OPENAI_MODEL;
-            info!("Sending to OpenAI ({})...", model);
-
-            api::openai::stream_openai_response(
-                &http_client,
-                openai_api_key.as_deref().unwrap_or(""),
+                None,
                 model, system_prompt, messages, |_| {},
             ).await.map_err(|e| e.to_string())
         }
@@ -739,14 +741,13 @@ async fn run_llm_pipeline(
                 let tts_ui_tx = ui_tx.clone();
                 let tts_key = elevenlabs_api_key.clone();
                 let tts_voice = elevenlabs_voice_id.clone();
-                let tts_worker = worker_base_url.clone();
                 let tts_text = parsed.spoken_text.clone();
                 tokio::spawn(async move {
                     match api::elevenlabs::synthesize_speech(
                         &tts_client,
                         tts_key.as_deref(),
                         tts_voice.as_deref(),
-                        tts_worker.as_deref(),
+                        None,
                         &tts_text,
                     ).await {
                         Ok(mp3_bytes) => {
@@ -761,7 +762,7 @@ async fn run_llm_pipeline(
 
             // Run Computer Use API for more precise coordinate detection (Claude only).
             // Runs in parallel with TTS — both fire right after the LLM response.
-            let computer_use_global_coordinate = if matches!(provider, LlmProvider::Anthropic | LlmProvider::WorkerProxy) {
+            let computer_use_global_coordinate = if matches!(provider, LlmProvider::Anthropic) {
                 if let Some(cursor_display) = capture.display_infos.iter().find(|d| d.is_cursor_display) {
                     let cursor_screenshot = capture.screenshots.iter()
                         .zip(capture.display_infos.iter())
@@ -773,7 +774,7 @@ async fn run_llm_pipeline(
                         match api::computer_use::detect_element_location(
                             &http_client,
                             anthropic_api_key.as_deref(),
-                            worker_base_url.as_deref(),
+                            None,
                             &screenshot.jpeg_data,
                             &transcript,
                             cursor_display.display_width_points,
@@ -812,5 +813,25 @@ async fn run_llm_pipeline(
             log::error!("LLM API error: {}", e);
             let _ = ui_tx.send(UiEvent::PipelineError(e.to_string()));
         }
+    }
+}
+
+fn log_runtime_config_state(app_config: &config::AppConfig, simulation_mode: bool) {
+    if app_config.anthropic_api_key.is_some() {
+        info!("LLM: direct Anthropic API (Claude)");
+    } else {
+        log::warn!("Set ANTHROPIC_API_KEY to enable AI responses");
+    }
+
+    if !app_config.assemblyai_api_key.is_some() && !simulation_mode {
+        log::warn!("Set ASSEMBLYAI_API_KEY to enable transcription");
+    } else if app_config.assemblyai_api_key.is_some() {
+        info!("Transcription: direct AssemblyAI API");
+    }
+
+    if !app_config.elevenlabs_api_key.is_some() {
+        log::warn!("Set ELEVENLABS_API_KEY to enable TTS");
+    } else {
+        info!("TTS: direct ElevenLabs API");
     }
 }
