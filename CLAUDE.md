@@ -10,11 +10,12 @@ Rust, Raylib (overlay rendering), tokio (async), reqwest (HTTP), tokio-tungsteni
 
 - `src/main.rs` — 60fps Raylib render loop wiring everything together
 - `src/app/` — platform detection (OS, X11/Wayland, Hyprland/Sway) + voice state machine (idle/listening/processing/responding)
-- `src/core/` — portable algorithms: bezier flight (forward + return), POINT tag parser, bubble text phrases, audio RMS, WAV builder, PCM16 converter, coordinate mapper, conversation history, design system tokens
-- `src/api/` — Claude SSE streaming, Claude Computer Use API, OpenAI, ElevenLabs TTS, AssemblyAI WebSocket transcription. All support direct API key mode + Cloudflare Worker proxy mode
+- `src/core/` — portable algorithms: bezier flight (forward + return), POINT tag parser, bubble text phrases, audio RMS, PCM16 converter, coordinate mapper, conversation history, design system tokens
+- `src/api/` — Claude SSE streaming, Claude Computer Use API, ElevenLabs TTS, AssemblyAI WebSocket transcription
 - `src/overlay/` — Raylib transparent overlay: cursor triangle with bloom effect, waveform, rotating arc loader, glass speech bubbles with custom TTF font, bezier flight animation (forward + return)
 - `src/tray/` — system tray icon with menu
-- `src/panel/` — settings panel (placeholder)
+- `src/panel/` — egui setup/settings window
+- `src/runtime/` — async transcription + LLM/TTS pipeline helpers
 - `src/hotkey/` — global push-to-talk: global-hotkey crate on X11/Win, evdev on Wayland
 - `src/audio/` — mic capture (cpal) + MP3 playback (rodio)
 - `src/screenshot/` — multi-monitor capture: grim per-output on Hyprland/Sway, xcap on X11/Win, GNOME animation suppression
@@ -22,7 +23,7 @@ Rust, Raylib (overlay rendering), tokio (async), reqwest (HTTP), tokio-tungsteni
 
 ## Config
 
-Via `.env`: `ASSEMBLYAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `CLICKY_WORKER_URL`
+Via `.env`: `ASSEMBLYAI_API_KEY`, `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
 
 ## Build & Run
 
@@ -35,10 +36,10 @@ cargo run          # loads .env automatically via dotenvy
 
 - **Phase 1 DONE**: Cargo project, platform detection, state machine, system tray, global hotkey, Raylib transparent overlay with click-through, cursor tracking (evdev + fallback).
 - **Phase 2 DONE**: cpal mic capture -> PCM16 16kHz conversion -> AssemblyAI WebSocket streaming with turn-based transcripts -> waveform visualization -> full hotkey->transcript pipeline with audio drain and cancel/restart.
-- **Phase 3 DONE**: Multi-monitor screenshots (grim per-output on Hyprland, xcap on X11), Claude + OpenAI vision API with SSE streaming, POINT tag parsing, coordinate mapping (screenshot pixels -> logical display coords), conversation history, bezier flight to pointed elements. Claude Computer Use API for precise element coordinate detection.
-- **Phase 4 DONE**: ElevenLabs TTS wired end-to-end — LLM response -> synthesize_speech() -> MP3 playback via AudioPlayer. Dual-mode (direct API key + worker proxy) for elevenlabs.rs. TTS fires in pipeline parallel with Computer Use. Responding->Idle waits for TTS completion. espeak-ng fallback on TTS failure. Hotkey press stops playback.
-- **Phase 5 DONE**: Cursor animation polish — tuned bezier flight (slower forward 600px/s, faster return 900px/s), animated return flight to mouse with gentler arc, 2-second hold at target before return. Triangle-shaped bloom effect (scaled transparent copies). Glass speech bubble with blue tint, custom TTF font (AdwaitaSans), white text, curated friendly phrases. Rotating arc loading animation.
-- **Phase 6**: Settings + packaging — egui settings panel, config persistence, .deb/AppImage packaging, autostart, Hyprland config snippet.
+- **Phase 3 DONE**: Multi-monitor screenshots (grim per-output on Hyprland, xcap on X11), Claude vision API with SSE streaming, POINT tag parsing, coordinate mapping (screenshot pixels -> logical display coords), conversation history, bezier flight to pointed elements. Claude Computer Use API for precise element coordinate detection.
+- **Phase 4 DONE**: ElevenLabs TTS wired end-to-end — LLM response -> synthesize_speech() -> MP3 playback via AudioPlayer. TTS fires in pipeline parallel with Computer Use. Responding->Idle waits for TTS completion. espeak-ng fallback on TTS failure. Hotkey press stops playback.
+- **Phase 5 DONE**: Cursor animation polish — tuned bezier flight (slower forward 600px/s, faster return 900px/s), animated return flight to mouse with gentler arc, 2-second hold at target before return. Triangle-shaped bloom effect (scaled transparent copies). Telegram-style speech bubble, darker blue bubble color, system font loading, rotating arc loading animation.
+- **Phase 6 IN PROGRESS**: settings, config persistence, autostart, README, CI, release prep.
 
 ## Conventions
 
@@ -50,7 +51,6 @@ cargo run          # loads .env automatically via dotenvy
 - Don't add features beyond what's asked.
 - Don't fix warnings unless asked.
 - Read files before editing.
-- Dual-mode API pattern: direct API key for dev, Cloudflare Worker proxy for production (same pattern across claude.rs, assemblyai.rs, and elevenlabs.rs).
 - `UiEvent` enum is the bridge between async tasks and the sync 60fps render loop via `std::sync::mpsc`.
 
 ## Key Patterns
