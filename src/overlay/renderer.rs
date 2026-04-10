@@ -844,6 +844,9 @@ fn apply_x11_overlay_hints() -> Result<(), String> {
     if x11_window == 0 {
         return Err("GLFW did not return an X11 window id".into());
     }
+    let x11_window: u32 = x11_window
+        .try_into()
+        .map_err(|_| "Failed to convert X11 window id to u32".to_string())?;
 
     let (connection, _) =
         x11rb::connect(None).map_err(|error| format!("Failed to connect to X11: {error}"))?;

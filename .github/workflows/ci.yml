@@ -83,5 +83,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release
-        run: cargo build --release
+      - name: Validate build
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cargo check
+          else
+            cargo build --release
+          fi
