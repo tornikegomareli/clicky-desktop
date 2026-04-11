@@ -1,111 +1,97 @@
 # Clicky Desktop
 
-Clicky is a Linux-first desktop companion that lives in the system tray, listens on push-to-talk, looks at your screen, answers with voice, and can point at UI elements with a blue overlay triangle.
+Cross-platform implementation of [Clicky](https://github.com/farzaa/clicky), an AI companion that lives in your system tray, listens to your voice, looks at your screen, educates you and points at things.
 
-## Current Scope
+Hold the push-to-talk hotkey, ask a question, release. Clicky can see your screen, sends it with your transcript to Claude, speaks the answer back, and flies a blue triangle cursor to the UI element it's referencing.
 
-- Linux-first release target, with Windows builds kept working in CI
-- Anthropic for vision + response generation
-- AssemblyAI for live transcription
-- ElevenLabs for text-to-speech
-- Raylib overlay for cursor-following, target pointing, and speech bubbles
-- System tray app with persisted settings, hotkey selection, and autostart
+Built with Rust and Raylib. Runs on Linux and Windows.
 
-OpenAI and worker-proxy flows are intentionally out of the active product path.
+> This is an early release. I've tested heavily on Linux (Hyprland, X11) and Windows, but there's a good chance I missed something. If you hit a problem, [open an issue](https://github.com/tornikegomareli/clicky-desktop/issues) — I'm motivated to spend my evenings fixing bugs and building features.
 
-## How It Works
+## How it works
 
-1. Hold the global push-to-talk hotkey.
-2. Clicky records microphone audio and streams it to AssemblyAI.
-3. On release, it captures screenshots of all monitors.
-4. Transcript plus screenshots are sent to Claude.
-5. Claude responds conversationally and can include a point target.
-6. ElevenLabs speaks the response.
-7. The overlay triangle flies to the target and returns to the cursor.
+1. Hold the push-to-talk hotkey (Ctrl+Space by default)
+2. Speak your question
+3. Release — Clicky captures your screen and transcribes your voice
+4. Screenshots + transcript go to Claude, which responds about what's on your screen
+5. The response is spoken aloud via ElevenLabs
+6. A blue cursor flies to the relevant UI element on screen
 
-## Requirements
+## API keys
 
-- Rust toolchain
-- `espeak-ng` installed for TTS fallback
-- Linux:
-  - GTK 3 development packages for the tray UI
-  - OpenGL/X11/Wayland development libraries for Raylib
-- Windows:
-  - Rust MSVC toolchain
+You need keys from three services:
 
-## First-Run Setup
+- [Anthropic](https://console.anthropic.com/) — Claude for vision responses and [Computer Use](https://docs.anthropic.com/en/docs/agents-and-tools/computer-use) for precise UI element detection
+- [AssemblyAI](https://www.assemblyai.com/) — real-time voice transcription
+- [ElevenLabs](https://elevenlabs.io/) — text-to-speech
 
-On first launch, Clicky opens a setup window and asks for:
+On first launch, Clicky opens a setup window where you enter these. They're stored locally in your platform's config directory and only sent to their respective APIs.
 
-- `ANTHROPIC_API_KEY`
-- `ASSEMBLYAI_API_KEY`
-- `ELEVENLABS_API_KEY`
-- optional `ELEVENLABS_VOICE_ID`
+## Download
 
-Saved settings are stored in a platform-specific config directory. The resolved config path is logged at startup and shown inside the setup window.
+Grab the latest release from the [Releases page](https://github.com/tornikegomareli/clicky-desktop/releases).
 
-## Local Development
+- **Linux**: extract the tarball, run `./clicky-desktop`
+- **Windows**: extract the zip, run `clicky-desktop.exe`
+
+## Building from source
+
+You need the [Rust toolchain](https://rustup.rs/) installed.
+
+### Linux (Debian/Ubuntu)
 
 ```bash
-cargo build
-cargo run
+sudo apt install pkg-config libgtk-3-dev libasound2-dev libpipewire-0.3-dev \
+  libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev \
+  libgl1-mesa-dev libgbm-dev libwayland-dev libxkbcommon-dev \
+  libxdo-dev libudev-dev libssl-dev cmake
 ```
 
-Environment variables in `.env` still override the saved config, which is useful for local development.
-
-## Useful Debug Flags
-
-Debug builds only:
+### Linux (Fedora)
 
 ```bash
-CLICKY_FORCE_SETUP_WINDOW=1 cargo run
-CLICKY_SIMULATE=1 cargo run
+sudo dnf install gcc pkg-config gtk3-devel alsa-lib-devel pipewire-devel \
+  libX11-devel libXi-devel libXrandr-devel libXcursor-devel libXinerama-devel \
+  mesa-libGL-devel libgbm-devel wayland-devel libxkbcommon-devel \
+  libxdo-devel systemd-devel openssl-devel cmake
 ```
 
-## Config
+### Windows
 
-- `.env` is loaded automatically in local development
-- saved settings are persisted by the app UI
-- `.env` values override saved settings when both are present
+No extra system dependencies — just the Rust MSVC toolchain.
 
-## Testing
+### Build and run
 
 ```bash
-cargo check
-cargo test
+git clone https://github.com/tornikegomareli/clicky-desktop
+cd clicky-desktop
+cargo build --release
+./target/release/clicky-desktop
 ```
 
-GitHub Actions runs PR validation with:
+## Hyprland users
 
-- Linux tests
-- Linux release build
-- Windows release build
+Add these window rules to your `hyprland.conf` for proper overlay behavior:
 
-## Project Layout
+```
+windowrulev2 = float, class:clicky-overlay
+windowrulev2 = pin, class:clicky-overlay
+windowrulev2 = nofocus, class:clicky-overlay
+windowrulev2 = noshadow, class:clicky-overlay
+windowrulev2 = noborder, class:clicky-overlay
+windowrulev2 = noanim, class:clicky-overlay
+```
 
-- `src/main.rs`: application bootstrap and render-loop entrypoint
-- `src/runtime/`: async transcription, screenshot, Claude, TTS, and Computer Use pipeline
-- `src/api/`: Anthropic, AssemblyAI, ElevenLabs, Computer Use integrations
-- `src/overlay/`: transparent overlay renderer
-- `src/panel/`: egui setup/settings window
-- `src/screenshot/`: multi-monitor capture
-- `src/hotkey/`: global push-to-talk backends
-- `src/cursor_tracker/`: global cursor tracking per platform
-- `src/config/`: persisted app configuration
-- `src/autostart/`: login-start integration
+## Debug flags
 
-## Known Limitations
+```bash
+CLICKY_SIMULATE=1 cargo run          # test animations without API calls
+CLICKY_FORCE_SETUP_WINDOW=1 cargo run # re-open the setup window
+```
 
-- Linux X11 overlay taskbar/dock suppression remains unresolved.
-- Wayland/Hyprland overlay behavior is still constrained by the current Raylib/GLFW backend.
-- Packaging and signed distributables are not finished yet.
+## Credits
 
-## Release Target
+This is a cross-platform implementation of the original [Clicky](https://github.com/farzaa/clicky) by [@farzaa](https://github.com/farzaa), which is a macOS-native app built with Swift.
+## License
 
-The current `0.1` target is a developer release with:
-
-- working local setup flow
-- Linux and Windows CI builds
-- basic PR validation
-- contributor-facing README and issue templates
-- packaging plan defined, even if final distributables are still pending
+[MIT](LICENSE)
