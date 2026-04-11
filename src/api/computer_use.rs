@@ -1,3 +1,4 @@
+use log::{debug, info, warn};
 /// Claude Computer Use API client — detects UI element coordinates with
 /// Claude's specialized pixel-counting training.
 ///
@@ -12,10 +13,8 @@
 /// we pick the Anthropic-recommended resolution closest to the display's
 /// actual aspect ratio. This avoids distorting the image Claude sees,
 /// which significantly improves X-axis coordinate accuracy.
-
 use reqwest::Client;
 use serde_json::json;
-use log::{info, debug, warn};
 
 /// The model used for Computer Use element detection.
 /// Same as the main vision model — claude-sonnet-4-6.
@@ -25,9 +24,9 @@ pub const COMPUTER_USE_MODEL: &str = "claude-sonnet-4-6";
 /// We pick the one closest to the actual display aspect ratio to avoid distortion.
 /// Higher resolutions get downsampled by the API and degrade precision.
 const SUPPORTED_RESOLUTIONS: [(u32, u32, f64); 3] = [
-    (1024, 768, 1024.0 / 768.0),  // 4:3   = 1.333 (legacy displays)
-    (1280, 800, 1280.0 / 800.0),  // 16:10  = 1.600 (MacBook, many laptops)
-    (1366, 768, 1366.0 / 768.0),  // ~16:9  = 1.779 (external monitors)
+    (1024, 768, 1024.0 / 768.0), // 4:3   = 1.333 (legacy displays)
+    (1280, 800, 1280.0 / 800.0), // 16:10  = 1.600 (MacBook, many laptops)
+    (1366, 768, 1366.0 / 768.0), // ~16:9  = 1.779 (external monitors)
 ];
 
 /// Result of a Computer Use element detection call.
@@ -48,21 +47,23 @@ pub struct ComputerUseCoordinate {
 /// Returns None if no element was detected (conceptual question) or on error.
 pub async fn detect_element_location(
     http_client: &Client,
-    api_key: Option<&str>,
-    worker_base_url: Option<&str>,
+    api_key: &str,
     screenshot_jpeg: &[u8],
     user_question: &str,
     display_width_points: f64,
     display_height_points: f64,
 ) -> Option<ComputerUseCoordinate> {
-    let (cu_width, cu_height) = best_computer_use_resolution(
-        display_width_points, display_height_points,
-    );
+    let (cu_width, cu_height) =
+        best_computer_use_resolution(display_width_points, display_height_points);
 
-    info!("Computer Use: display is {:.0}x{:.0} (ratio {:.3}), using resolution {}x{}",
-        display_width_points, display_height_points,
+    info!(
+        "Computer Use: display is {:.0}x{:.0} (ratio {:.3}), using resolution {}x{}",
+        display_width_points,
+        display_height_points,
         display_width_points / display_height_points,
-        cu_width, cu_height);
+        cu_width,
+        cu_height
+    );
 
     // Resize screenshot to the Computer Use resolution
     let resized_jpeg = match resize_screenshot(screenshot_jpeg, cu_width, cu_height) {
@@ -75,10 +76,14 @@ pub async fn detect_element_location(
 
     // Make the API call
     let raw_coordinate = call_computer_use_api(
-        http_client, api_key, worker_base_url,
-        &resized_jpeg, user_question,
-        cu_width, cu_height,
-    ).await?;
+        http_client,
+        api_key,
+        &resized_jpeg,
+        user_question,
+        cu_width,
+        cu_height,
+    )
+    .await?;
 
     // Clamp coordinates to valid range — Claude occasionally returns
     // values slightly outside the declared display dimensions
@@ -124,17 +129,14 @@ fn best_computer_use_resolution(display_width: f64, display_height: f64) -> (u32
 /// Returns the raw (x, y) coordinate in Computer Use resolution space, or None.
 async fn call_computer_use_api(
     http_client: &Client,
-    api_key: Option<&str>,
-    worker_base_url: Option<&str>,
+    api_key: &str,
     resized_jpeg: &[u8],
     user_question: &str,
     declared_width: u32,
     declared_height: u32,
 ) -> Option<(f64, f64)> {
-    let base64_screenshot = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        resized_jpeg,
-    );
+    let base64_screenshot =
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, resized_jpeg);
 
     let user_prompt = format!(
         "The user asked this question while looking at their screen: \"{}\"\n\n\
@@ -179,32 +181,24 @@ async fn call_computer_use_api(
         ]
     });
 
-    let payload_mb = serde_json::to_vec(&request_body).map(|v| v.len()).unwrap_or(0) as f64 / 1_048_576.0;
-    debug!("Computer Use: sending {:.1}MB request (declared {}x{})", payload_mb, declared_width, declared_height);
+    let payload_mb = serde_json::to_vec(&request_body)
+        .map(|v| v.len())
+        .unwrap_or(0) as f64
+        / 1_048_576.0;
+    debug!(
+        "Computer Use: sending {:.1}MB request (declared {}x{})",
+        payload_mb, declared_width, declared_height
+    );
 
-    let response = if let Some(key) = api_key {
-        http_client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-            .header("anthropic-beta", "computer-use-2025-11-24")
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-    } else if let Some(base_url) = worker_base_url {
-        // Worker proxy — the worker forwards the beta header
-        let url = format!("{}/chat", base_url);
-        http_client
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-    } else {
-        warn!("Computer Use: no API key or worker URL configured");
-        return None;
-    };
+    let response = http_client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("anthropic-beta", "computer-use-2025-11-24")
+        .header("content-type", "application/json")
+        .json(&request_body)
+        .send()
+        .await;
 
     let response = match response {
         Ok(r) => r,
@@ -217,7 +211,11 @@ async fn call_computer_use_api(
     if !response.status().is_success() {
         let status = response.status();
         let error_body = response.text().await.unwrap_or_default();
-        warn!("Computer Use: API error {}: {}", status, &error_body[..error_body.len().min(200)]);
+        warn!(
+            "Computer Use: API error {}: {}",
+            status,
+            &error_body[..error_body.len().min(200)]
+        );
         return None;
     }
 
@@ -265,14 +263,15 @@ fn resize_screenshot(jpeg_data: &[u8], target_width: u32, target_height: u32) ->
     let img = image::load_from_memory(jpeg_data).ok()?.to_rgba8();
 
     let resized = image::imageops::resize(
-        &img, target_width, target_height,
+        &img,
+        target_width,
+        target_height,
         image::imageops::FilterType::Lanczos3,
     );
 
     let mut jpeg_buf = Vec::new();
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        std::io::Cursor::new(&mut jpeg_buf), 85,
-    );
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::Cursor::new(&mut jpeg_buf), 85);
     encoder.encode_image(&resized).ok()?;
 
     Some(jpeg_buf)

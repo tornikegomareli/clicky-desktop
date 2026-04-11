@@ -5,10 +5,9 @@
 ///   GNOME Wayland  → xcap portal with animations temporarily disabled (no flash)
 ///   X11            → xcap (XGetImage)
 ///   Fallback       → xcap default
-
 use crate::api::claude::ScreenshotForClaude;
+use crate::app::platform::{DisplayServer, PlatformInfo, WaylandCompositor};
 use crate::core::coordinate_mapper::DisplayInfo;
-use crate::app::platform::{PlatformInfo, DisplayServer, WaylandCompositor};
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use std::fmt;
@@ -17,28 +16,28 @@ use std::io::Cursor;
 const MAX_WIDTH: u32 = 1280;
 const JPEG_QUALITY: u8 = 80;
 
-/// Returns the DPI scale factor for the primary monitor on Windows.
-/// Falls back to 1.0 on other platforms or if detection fails.
-///
-/// IMPORTANT: On Windows, Raylib/GLFW calls SetProcessDpiAwarenessContext
-/// during init, making the process per-monitor DPI aware. After that,
-/// GetCursorPos returns physical pixels and the overlay window operates
-/// in physical pixel space. So we should NOT apply DPI scaling to
-/// coordinates — everything is already in physical pixels.
-///
-/// This function is only used for diagnostic logging.
 #[cfg(target_os = "windows")]
-fn get_windows_dpi_scale() -> f64 {
-    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-    let dpi = unsafe { GetDpiForSystem() };
-    let scale = dpi as f64 / 96.0;
-    log::info!("Windows DPI: {} (scale factor: {:.2}x — note: GLFW makes process DPI-aware, using physical pixels)", dpi, scale);
-    scale
+fn get_windows_virtual_desktop_bounds() -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+
+    let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+    let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+
+    if width > 0 && height > 0 {
+        Some((origin_x, origin_y, width, height))
+    } else {
+        None
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
-fn get_windows_dpi_scale() -> f64 {
-    1.0
+fn get_windows_virtual_desktop_bounds() -> Option<(i32, i32, i32, i32)> {
+    None
 }
 
 pub struct CaptureResult {
@@ -141,7 +140,6 @@ struct WlrMonitorInfo {
     y: f64,
     width: f64,
     height: f64,
-    scale: f64,
 }
 
 /// Queries monitor geometry from Hyprland via `hyprctl monitors -j`.
@@ -187,7 +185,6 @@ fn query_wlr_monitors() -> Option<Vec<WlrMonitorInfo>> {
             y,
             width: logical_width,
             height: logical_height,
-            scale,
         });
     }
 
@@ -218,7 +215,6 @@ fn parse_sway_monitors(stdout: &[u8]) -> Option<Vec<WlrMonitorInfo>> {
             y,
             width: width / scale,
             height: height / scale,
-            scale,
         });
     }
 
@@ -229,8 +225,9 @@ fn parse_sway_monitors(stdout: &[u8]) -> Option<Vec<WlrMonitorInfo>> {
 /// Uses hyprctl/swaymsg to get accurate logical monitor dimensions
 /// so coordinate mapping works correctly.
 fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
-    let monitors = query_wlr_monitors()
-        .ok_or_else(|| ScreenshotError::CaptureError("Cannot query monitors via hyprctl/swaymsg".into()))?;
+    let monitors = query_wlr_monitors().ok_or_else(|| {
+        ScreenshotError::CaptureError("Cannot query monitors via hyprctl/swaymsg".into())
+    })?;
 
     if monitors.is_empty() {
         return Err(ScreenshotError::NoMonitors);
@@ -245,8 +242,10 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
 
         // Capture this specific output
         let output = std::process::Command::new("grim")
-            .arg("-o").arg(&monitor.name)
-            .arg("-t").arg("png")
+            .arg("-o")
+            .arg(&monitor.name)
+            .arg("-t")
+            .arg("png")
             .arg("-")
             .output()
             .map_err(|e| ScreenshotError::CaptureError(format!("grim not found: {}", e)))?;
@@ -254,16 +253,25 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(ScreenshotError::CaptureError(format!(
-                "grim failed for output {}: {}", monitor.name, stderr
+                "grim failed for output {}: {}",
+                monitor.name, stderr
             )));
         }
 
         let img = image::load_from_memory_with_format(&output.stdout, image::ImageFormat::Png)
-            .map_err(|e| ScreenshotError::CaptureError(format!("Failed to decode grim output: {}", e)))?
+            .map_err(|e| {
+                ScreenshotError::CaptureError(format!("Failed to decode grim output: {}", e))
+            })?
             .to_rgba8();
 
-        log::info!("grim captured {}: {}x{} pixels (logical {}x{})",
-            monitor.name, img.width(), img.height(), monitor.width, monitor.height);
+        log::info!(
+            "grim captured {}: {}x{} pixels (logical {}x{})",
+            monitor.name,
+            img.width(),
+            img.height(),
+            monitor.width,
+            monitor.height
+        );
 
         let mut scaled = scale_image(&img);
         draw_coordinate_grid(&mut scaled);
@@ -306,17 +314,46 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
         });
     }
 
-    log::info!("Screenshot captured: {} screen(s), cursor on screen {}",
+    log::info!(
+        "Screenshot captured: {} screen(s), cursor on screen {}",
         total,
-        display_infos.iter().find(|d| d.is_cursor_display).map_or(0, |d| d.screen_number)
+        display_infos
+            .iter()
+            .find(|d| d.is_cursor_display)
+            .map_or(0, |d| d.screen_number)
     );
 
-    Ok(CaptureResult { screenshots, display_infos })
+    Ok(CaptureResult {
+        screenshots,
+        display_infos,
+    })
 }
 
 /// Queries the primary monitor's dimensions for overlay window sizing.
 /// Falls back to 1920x1080 if detection fails.
 pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
+    let (_, _, width, height) = detect_overlay_bounds(platform);
+    (width, height)
+}
+
+/// Returns the overlay origin and size.
+/// On Windows this covers the full virtual desktop so the overlay can span
+/// every monitor, including layouts with negative monitor coordinates.
+pub fn detect_overlay_bounds(platform: &PlatformInfo) -> (i32, i32, i32, i32) {
+    #[cfg(target_os = "windows")]
+    if matches!(platform.os, crate::app::platform::OperatingSystem::Windows) {
+        if let Some((origin_x, origin_y, width, height)) = get_windows_virtual_desktop_bounds() {
+            log::info!(
+                "Detected Windows virtual desktop: origin=({}, {}) size={}x{}",
+                origin_x,
+                origin_y,
+                width,
+                height
+            );
+            return (origin_x, origin_y, width, height);
+        }
+    }
+
     // Try wlroots monitor query first (Hyprland/Sway)
     if platform.display_server == Some(DisplayServer::Wayland) {
         if let Some(monitors) = query_wlr_monitors() {
@@ -324,7 +361,7 @@ pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
                 let w = primary.width as i32;
                 let h = primary.height as i32;
                 log::info!("Detected screen size: {}x{} (from {})", w, h, primary.name);
-                return (w, h);
+                return (0, 0, w, h);
             }
         }
     }
@@ -335,27 +372,24 @@ pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
             let w = m.width().unwrap_or(1920) as i32;
             let h = m.height().unwrap_or(1080) as i32;
             log::info!("Detected screen size: {}x{} (from xcap)", w, h);
-            return (w, h);
+            return (0, 0, w, h);
         }
     }
 
     log::warn!("Could not detect screen size, defaulting to 1920x1080");
-    (1920, 1080)
+    (0, 0, 1920, 1080)
 }
 
 /// Capture using xcap (cross-platform).
 /// On Windows after GLFW init, the process is per-monitor DPI aware, so
 /// xcap, GetCursorPos, and the overlay window all use physical pixels.
 fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
-    let monitors = xcap::Monitor::all()
-        .map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
+    let monitors =
+        xcap::Monitor::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
 
     if monitors.is_empty() {
         return Err(ScreenshotError::NoMonitors);
     }
-
-    // Log DPI for diagnostics (not used for coordinate conversion)
-    let _ = get_windows_dpi_scale();
 
     let total = monitors.len();
     let mut screenshots = Vec::with_capacity(total);
@@ -409,12 +443,19 @@ fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
         });
     }
 
-    log::info!("Screenshot captured: {} screen(s), cursor on screen {}",
+    log::info!(
+        "Screenshot captured: {} screen(s), cursor on screen {}",
         total,
-        display_infos.iter().find(|d| d.is_cursor_display).map_or(0, |d| d.screen_number)
+        display_infos
+            .iter()
+            .find(|d| d.is_cursor_display)
+            .map_or(0, |d| d.screen_number)
     );
 
-    Ok(CaptureResult { screenshots, display_infos })
+    Ok(CaptureResult {
+        screenshots,
+        display_infos,
+    })
 }
 
 fn scale_image(img: &image::RgbaImage) -> image::RgbaImage {
@@ -525,7 +566,8 @@ fn draw_tiny_text(img: &mut image::RgbaImage, x: u32, y: u32, text: &str, color:
 fn encode_jpeg(img: &image::RgbaImage) -> Result<Vec<u8>, ScreenshotError> {
     let mut buf = Vec::new();
     let mut encoder = JpegEncoder::new_with_quality(Cursor::new(&mut buf), JPEG_QUALITY);
-    encoder.encode_image(img)
+    encoder
+        .encode_image(img)
         .map_err(|e| ScreenshotError::CaptureError(format!("JPEG encode: {}", e)))?;
     Ok(buf)
 }

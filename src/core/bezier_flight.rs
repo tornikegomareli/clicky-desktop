@@ -17,9 +17,6 @@ pub struct BezierFlightFrame {
 
     /// Scale factor for the "pulse" effect during flight.
     pub scale: f64,
-
-    /// Linear progress 0.0 → 1.0
-    pub progress: f64,
 }
 
 /// Forward flight: graceful arc to target element.
@@ -41,7 +38,11 @@ const RETURN_SCALE_PULSE: f64 = 0.08;
 /// Computes the flight duration based on distance.
 /// Forward flights are slower and more graceful; return flights are quicker.
 pub fn compute_flight_duration_seconds(
-    start_x: f64, start_y: f64, end_x: f64, end_y: f64, is_return: bool,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+    is_return: bool,
 ) -> f64 {
     let distance = ((end_x - start_x).powi(2) + (end_y - start_y).powi(2)).sqrt();
     if is_return {
@@ -54,7 +55,11 @@ pub fn compute_flight_duration_seconds(
 /// Computes the bezier control point — placed at the midpoint, raised
 /// perpendicular to the line. Forward flights have a bigger arc; return flights gentler.
 pub fn compute_control_point(
-    start_x: f64, start_y: f64, end_x: f64, end_y: f64, is_return: bool,
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+    is_return: bool,
 ) -> (f64, f64) {
     let midpoint_x = (start_x + end_x) / 2.0;
     let midpoint_y = (start_y + end_y) / 2.0;
@@ -88,61 +93,74 @@ fn smoothstep(linear_progress: f64) -> f64 {
 /// Evaluates the quadratic bezier curve at parameter t.
 fn evaluate_quadratic_bezier(
     t: f64,
-    start_x: f64, start_y: f64,
-    control_x: f64, control_y: f64,
-    end_x: f64, end_y: f64,
+    start_x: f64,
+    start_y: f64,
+    control_x: f64,
+    control_y: f64,
+    end_x: f64,
+    end_y: f64,
 ) -> (f64, f64) {
     let one_minus_t = 1.0 - t;
-    let x = one_minus_t * one_minus_t * start_x
-        + 2.0 * one_minus_t * t * control_x
-        + t * t * end_x;
-    let y = one_minus_t * one_minus_t * start_y
-        + 2.0 * one_minus_t * t * control_y
-        + t * t * end_y;
+    let x = one_minus_t * one_minus_t * start_x + 2.0 * one_minus_t * t * control_x + t * t * end_x;
+    let y = one_minus_t * one_minus_t * start_y + 2.0 * one_minus_t * t * control_y + t * t * end_y;
     (x, y)
 }
 
 /// Computes the tangent (derivative) of the quadratic bezier at parameter t.
 fn evaluate_quadratic_bezier_tangent(
     t: f64,
-    start_x: f64, start_y: f64,
-    control_x: f64, control_y: f64,
-    end_x: f64, end_y: f64,
+    start_x: f64,
+    start_y: f64,
+    control_x: f64,
+    control_y: f64,
+    end_x: f64,
+    end_y: f64,
 ) -> (f64, f64) {
-    let tangent_x =
-        2.0 * (1.0 - t) * (control_x - start_x) + 2.0 * t * (end_x - control_x);
-    let tangent_y =
-        2.0 * (1.0 - t) * (control_y - start_y) + 2.0 * t * (end_y - control_y);
+    let tangent_x = 2.0 * (1.0 - t) * (control_x - start_x) + 2.0 * t * (end_x - control_x);
+    let tangent_y = 2.0 * (1.0 - t) * (control_y - start_y) + 2.0 * t * (end_y - control_y);
     (tangent_x, tangent_y)
 }
 
 /// Computes a single frame of the bezier flight animation.
 pub fn compute_flight_frame(
     linear_progress: f64,
-    start_x: f64, start_y: f64,
-    control_x: f64, control_y: f64,
-    end_x: f64, end_y: f64,
+    start_x: f64,
+    start_y: f64,
+    control_x: f64,
+    control_y: f64,
+    end_x: f64,
+    end_y: f64,
     is_return: bool,
 ) -> BezierFlightFrame {
     let eased_progress = smoothstep(linear_progress);
 
     let (x, y) = evaluate_quadratic_bezier(
         eased_progress,
-        start_x, start_y,
-        control_x, control_y,
-        end_x, end_y,
+        start_x,
+        start_y,
+        control_x,
+        control_y,
+        end_x,
+        end_y,
     );
 
     let (tangent_x, tangent_y) = evaluate_quadratic_bezier_tangent(
         eased_progress,
-        start_x, start_y,
-        control_x, control_y,
-        end_x, end_y,
+        start_x,
+        start_y,
+        control_x,
+        control_y,
+        end_x,
+        end_y,
     );
 
     let rotation_radians = tangent_y.atan2(tangent_x);
 
-    let scale_amount = if is_return { RETURN_SCALE_PULSE } else { FORWARD_SCALE_PULSE };
+    let scale_amount = if is_return {
+        RETURN_SCALE_PULSE
+    } else {
+        FORWARD_SCALE_PULSE
+    };
     let scale_pulse = (linear_progress * std::f64::consts::PI).sin();
     let scale = 1.0 + scale_pulse * scale_amount;
 
@@ -151,7 +169,6 @@ pub fn compute_flight_frame(
         y,
         rotation_radians,
         scale,
-        progress: linear_progress,
     }
 }
 
@@ -163,12 +180,14 @@ mod tests {
     fn flight_starts_at_origin_and_ends_at_destination() {
         let (control_x, control_y) = compute_control_point(0.0, 0.0, 800.0, 0.0, false);
 
-        let start_frame = compute_flight_frame(0.0, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
+        let start_frame =
+            compute_flight_frame(0.0, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
         assert!((start_frame.x - 0.0).abs() < 0.1);
         assert!((start_frame.y - 0.0).abs() < 0.1);
         assert!((start_frame.scale - 1.0).abs() < 0.01);
 
-        let end_frame = compute_flight_frame(1.0, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
+        let end_frame =
+            compute_flight_frame(1.0, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
         assert!((end_frame.x - 800.0).abs() < 0.1);
         assert!((end_frame.y - 0.0).abs() < 0.1);
         assert!((end_frame.scale - 1.0).abs() < 0.01);
@@ -177,7 +196,8 @@ mod tests {
     #[test]
     fn midpoint_has_maximum_scale_pulse() {
         let (control_x, control_y) = compute_control_point(0.0, 0.0, 800.0, 0.0, false);
-        let mid_frame = compute_flight_frame(0.5, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
+        let mid_frame =
+            compute_flight_frame(0.5, 0.0, 0.0, control_x, control_y, 800.0, 0.0, false);
         // At midpoint, sin(0.5 * PI) = 1.0, so scale = 1.0 + 0.15 = 1.15
         assert!((mid_frame.scale - 1.15).abs() < 0.01);
     }

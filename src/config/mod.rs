@@ -54,9 +54,11 @@ impl AppConfig {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let config_path = config_file_path().ok_or_else(|| "Config directory unavailable".to_string())?;
+        let config_path =
+            config_file_path().ok_or_else(|| "Config directory unavailable".to_string())?;
         if let Some(parent_dir) = config_path.parent() {
-            fs::create_dir_all(parent_dir).map_err(|e| format!("Failed to create config directory: {e}"))?;
+            fs::create_dir_all(parent_dir)
+                .map_err(|e| format!("Failed to create config directory: {e}"))?;
         }
 
         let serialized =
@@ -71,10 +73,13 @@ impl AppConfig {
     }
 
     fn apply_env_overrides(&mut self) {
-        self.assemblyai_api_key = env_override("ASSEMBLYAI_API_KEY", self.assemblyai_api_key.take());
+        self.assemblyai_api_key =
+            env_override("ASSEMBLYAI_API_KEY", self.assemblyai_api_key.take());
         self.anthropic_api_key = env_override("ANTHROPIC_API_KEY", self.anthropic_api_key.take());
-        self.elevenlabs_api_key = env_override("ELEVENLABS_API_KEY", self.elevenlabs_api_key.take());
-        self.elevenlabs_voice_id = env_override("ELEVENLABS_VOICE_ID", self.elevenlabs_voice_id.take());
+        self.elevenlabs_api_key =
+            env_override("ELEVENLABS_API_KEY", self.elevenlabs_api_key.take());
+        self.elevenlabs_voice_id =
+            env_override("ELEVENLABS_VOICE_ID", self.elevenlabs_voice_id.take());
     }
 }
 

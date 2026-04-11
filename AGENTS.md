@@ -22,7 +22,7 @@ High-level flow:
 1. User holds a global hotkey.
 2. Microphone audio is captured and streamed to AssemblyAI for transcription.
 3. On release, the app captures screenshots of all monitors.
-4. Transcript plus screenshots are sent to Claude or OpenAI vision.
+4. Transcript plus screenshots are sent to Claude.
 5. Claude Computer Use can return precise screen coordinates.
 6. Response audio is synthesized with ElevenLabs, with `espeak-ng` fallback.
 7. A blue triangle overlay animates to the detected UI target and returns to the cursor.
@@ -46,16 +46,15 @@ High-level flow:
 - `src/app/`
   - Platform detection and the `VoiceState` state machine.
 - `src/core/`
-  - Portable logic: bezier flight, POINT tag parsing, bubble text, RMS tracking, WAV building, PCM16 conversion, coordinate mapping, conversation history, design tokens.
+  - Portable logic: bezier flight, POINT tag parsing, bubble text, RMS tracking, PCM16 conversion, coordinate mapping, conversation history, design tokens.
 - `src/api/`
-  - Claude SSE, Claude Computer Use, OpenAI, ElevenLabs, and AssemblyAI integrations.
-  - Important pattern: all APIs support both direct API-key mode and Cloudflare Worker proxy mode.
+  - Claude SSE, Claude Computer Use, ElevenLabs, and AssemblyAI integrations.
 - `src/overlay/`
   - Transparent Raylib overlay: triangle cursor, bloom, waveform, loading arc, speech bubble, flight animation.
 - `src/tray/`
   - Tray icon and menu integration.
 - `src/panel/`
-  - Settings panel placeholder.
+  - egui setup and settings window.
 - `src/hotkey/`
   - Global push-to-talk implementations.
 - `src/audio/`
@@ -92,10 +91,8 @@ Environment variables used by the app:
 
 - `ASSEMBLYAI_API_KEY`
 - `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY`
 - `ELEVENLABS_API_KEY`
 - `ELEVENLABS_VOICE_ID`
-- `CLICKY_WORKER_URL`
 
 `dotenvy` loads `.env` automatically in `cargo run`.
 
@@ -135,7 +132,6 @@ Note: the current repo `Cargo.toml` may still be on older settings. Follow the r
 - Do not add features beyond the request.
 - Do not fix warnings unless asked.
 - Read files before editing.
-- Preserve the dual-mode API pattern consistently across integrations.
 - Treat `UiEvent` as the async-to-render-loop boundary.
 
 ## Current Product Status
@@ -145,4 +141,4 @@ Note: the current repo `Cargo.toml` may still be on older settings. Follow the r
 - Phase 3 complete: screenshots, vision APIs, POINT parsing, coordinate mapping, conversation history, cursor flight, Computer Use.
 - Phase 4 complete: ElevenLabs TTS, playback, fallback behavior, lifecycle integration.
 - Phase 5 complete: cursor animation polish, return flight, bubble styling, font, loading animation.
-- Phase 6 pending: settings, config persistence, packaging, autostart.
+- Phase 6 in progress: packaging, release docs, and CI.

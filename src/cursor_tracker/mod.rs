@@ -5,10 +5,10 @@
 /// Each platform provides its own way to read the global cursor position.
 ///
 /// Platform strategy:
-///   Linux/Wayland  → evdev (reads /dev/input/ directly)
-///   Linux/X11      → Raylib get_mouse_position (X11 delivers motion to shaped windows)
-///   Windows        → Win32 GetCursorPos
-///   Fallback       → Raylib get_mouse_position (best effort)
+///   Linux/Wayland  -> evdev (reads /dev/input/ directly)
+///   Linux/X11      -> Raylib get_mouse_position (X11 delivers motion to shaped windows)
+///   Windows        -> Win32 GetCursorPos
+///   Fallback       -> Raylib get_mouse_position (best effort)
 pub(crate) mod fallback;
 
 #[cfg(target_os = "linux")]
@@ -17,7 +17,9 @@ mod evdev_tracker;
 #[cfg(target_os = "windows")]
 mod win32_tracker;
 
-use crate::app::platform::{DisplayServer, OperatingSystem, PlatformInfo};
+#[cfg(target_os = "linux")]
+use crate::app::platform::DisplayServer;
+use crate::app::platform::{OperatingSystem, PlatformInfo};
 
 /// Trait for reading global cursor position, regardless of platform.
 pub trait CursorTracker: Send {
@@ -31,17 +33,14 @@ pub trait CursorTracker: Send {
 }
 
 /// Creates the best cursor tracker for the current platform.
-/// Returns None only if no tracking method is available at all.
 pub fn create(
     platform: &PlatformInfo,
-    screen_width: i32,
-    screen_height: i32,
+    #[cfg(target_os = "linux")] screen_width: i32,
+    #[cfg(target_os = "linux")] screen_height: i32,
 ) -> Box<dyn CursorTracker> {
     match platform.os {
         #[cfg(target_os = "linux")]
         OperatingSystem::Linux => {
-            // On Wayland, Raylib can't get mouse position with passthrough enabled.
-            // Use evdev to read directly from input devices.
             if platform.display_server == Some(DisplayServer::Wayland) {
                 if let Some(tracker) =
                     evdev_tracker::EvdevCursorTracker::new(screen_width, screen_height)
@@ -50,7 +49,7 @@ pub fn create(
                     return Box::new(tracker);
                 }
                 log::warn!(
-                    "evdev unavailable on Wayland — falling back to Raylib (cursor may not track)"
+                    "evdev unavailable on Wayland -> falling back to Raylib (cursor may not track)"
                 );
             } else {
                 log::info!("Cursor tracking: Raylib (X11)");

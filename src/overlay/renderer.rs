@@ -1,13 +1,12 @@
+use crate::app::platform::PlatformInfo;
+use crate::app::state_machine::VoiceState;
+use crate::core::{bezier_flight, design_system};
 /// Raylib overlay renderer — draws the blue cursor triangle, speech bubbles,
 /// waveform visualization, loading animation, and bezier flight animations.
 ///
 /// This is the visual heart of Clicky. It runs at 60fps on a transparent
 /// borderless window that overlays the entire virtual desktop.
-
 use raylib::prelude::*;
-use crate::app::platform::PlatformInfo;
-use crate::app::state_machine::VoiceState;
-use crate::core::{bezier_flight, design_system};
 
 #[cfg(target_os = "linux")]
 use crate::app::platform::DisplayServer;
@@ -53,13 +52,17 @@ impl ActiveFlightAnimation {
     pub fn new(start_x: f64, start_y: f64, end_x: f64, end_y: f64, is_return: bool) -> Self {
         let (control_x, control_y) =
             bezier_flight::compute_control_point(start_x, start_y, end_x, end_y, is_return);
-        let duration_seconds =
-            bezier_flight::compute_flight_duration_seconds(start_x, start_y, end_x, end_y, is_return);
+        let duration_seconds = bezier_flight::compute_flight_duration_seconds(
+            start_x, start_y, end_x, end_y, is_return,
+        );
 
         Self {
-            start_x, start_y,
-            control_x, control_y,
-            end_x, end_y,
+            start_x,
+            start_y,
+            control_x,
+            control_y,
+            end_x,
+            end_y,
             duration_seconds,
             elapsed_seconds: 0.0,
             is_return,
@@ -130,15 +133,15 @@ impl OverlayRenderState {
 
         if is_visible && !self.speech_bubble_text.is_empty() {
             // Fade in opacity
-            self.speech_bubble_opacity = (self.speech_bubble_opacity + delta_seconds as f32 * 4.0).min(1.0);
+            self.speech_bubble_opacity =
+                (self.speech_bubble_opacity + delta_seconds as f32 * 4.0).min(1.0);
 
             // Typewriter effect: ~30 chars per second
             if self.speech_bubble_visible_char_count < self.speech_bubble_text.len() {
                 let char_speed = 30.0; // chars per second
-                self.speech_bubble_visible_char_progress = (
-                    self.speech_bubble_visible_char_progress + delta_seconds as f32 * char_speed
-                )
-                .min(self.speech_bubble_text.len() as f32);
+                self.speech_bubble_visible_char_progress =
+                    (self.speech_bubble_visible_char_progress + delta_seconds as f32 * char_speed)
+                        .min(self.speech_bubble_text.len() as f32);
                 self.speech_bubble_visible_char_count =
                     self.speech_bubble_visible_char_progress.floor() as usize;
             }
@@ -146,7 +149,8 @@ impl OverlayRenderState {
             || self.navigation_mode == CursorNavigationMode::FollowingMouse
         {
             // Fade out opacity
-            self.speech_bubble_opacity = (self.speech_bubble_opacity - delta_seconds as f32 * 5.0).max(0.0);
+            self.speech_bubble_opacity =
+                (self.speech_bubble_opacity - delta_seconds as f32 * 5.0).max(0.0);
             if self.speech_bubble_opacity <= 0.0 {
                 self.speech_bubble_visible_char_progress = 0.0;
                 self.speech_bubble_visible_char_count = 0;
@@ -191,9 +195,12 @@ impl OverlayRenderState {
 
             let frame = bezier_flight::compute_flight_frame(
                 progress,
-                flight.start_x, flight.start_y,
-                flight.control_x, flight.control_y,
-                flight.end_x, flight.end_y,
+                flight.start_x,
+                flight.start_y,
+                flight.control_x,
+                flight.control_y,
+                flight.end_x,
+                flight.end_y,
                 is_return,
             );
 
@@ -238,8 +245,9 @@ impl OverlayRenderState {
     /// Starts a bezier return flight from current position back to mouse.
     pub fn start_return_flight(&mut self, mouse_x: f32, mouse_y: f32) {
         self.navigation_mode = CursorNavigationMode::ReturningToMouse;
-        self.cursor_rotation_degrees =
-            (mouse_y as f64 - self.cursor_y as f64).atan2(mouse_x as f64 - self.cursor_x as f64).to_degrees();
+        self.cursor_rotation_degrees = (mouse_y as f64 - self.cursor_y as f64)
+            .atan2(mouse_x as f64 - self.cursor_x as f64)
+            .to_degrees();
         self.active_flight = None;
         self.speech_bubble_opacity = 0.0;
         self.speech_bubble_visible_char_progress = 0.0;
@@ -258,17 +266,15 @@ impl OverlayRenderState {
 }
 
 /// Draws one frame of the overlay. Called 60 times per second from the main loop.
-pub fn draw_overlay_frame(
-    draw_handle: &mut RaylibDrawHandle,
-    render_state: &OverlayRenderState,
-) {
+pub fn draw_overlay_frame(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
     draw_handle.clear_background(Color::BLANK);
 
     match render_state.voice_state {
         VoiceState::Idle | VoiceState::Responding => {
             draw_cursor_triangle(draw_handle, render_state);
 
-            let bubble_visible = (render_state.navigation_mode == CursorNavigationMode::PointingAtTarget
+            let bubble_visible = (render_state.navigation_mode
+                == CursorNavigationMode::PointingAtTarget
                 || render_state.navigation_mode == CursorNavigationMode::NavigatingToTarget)
                 && render_state.speech_bubble_opacity > 0.01;
 
@@ -286,13 +292,13 @@ pub fn draw_overlay_frame(
 }
 
 /// Draws the blue equilateral triangle cursor with triangle-shaped bloom effect.
-fn draw_cursor_triangle(
-    draw_handle: &mut RaylibDrawHandle,
-    render_state: &OverlayRenderState,
-) {
-    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
-    let center_x = render_state.cursor_x + offset;
-    let center_y = render_state.cursor_y + offset;
+fn draw_cursor_triangle(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
+    let (center_x, center_y) = visual_cursor_center(
+        draw_handle.get_screen_width() as f32,
+        draw_handle.get_screen_height() as f32,
+        render_state.cursor_x,
+        render_state.cursor_y,
+    );
     let base_size = design_system::cursor::TRIANGLE_SIZE * render_state.cursor_scale as f32;
     let glow_base_size = design_system::cursor::TRIANGLE_SIZE;
     let rotation_radians = render_state.cursor_rotation_degrees.to_radians() as f32;
@@ -333,7 +339,9 @@ fn draw_cursor_triangle(
         let bloom_size = glow_base_size * scale_factor;
         let verts = triangle_vertices(bloom_size, center_x, center_y, cos_r, sin_r);
         draw_handle.draw_triangle(
-            verts[0], verts[1], verts[2],
+            verts[0],
+            verts[1],
+            verts[2],
             Color::new(blue_r, blue_g, blue_b, alpha),
         );
     }
@@ -341,11 +349,19 @@ fn draw_cursor_triangle(
     // Main solid triangle
     let verts = triangle_vertices(base_size, center_x, center_y, cos_r, sin_r);
     draw_handle.draw_triangle(
-        verts[0], verts[1], verts[2],
+        verts[0],
+        verts[1],
+        verts[2],
         Color::new(blue_r, blue_g, blue_b, 255),
     );
 
-    let inner_glint = triangle_vertices(base_size * 0.62, center_x - 0.8, center_y - 1.0, cos_r, sin_r);
+    let inner_glint = triangle_vertices(
+        base_size * 0.62,
+        center_x - 0.8,
+        center_y - 1.0,
+        cos_r,
+        sin_r,
+    );
     draw_handle.draw_triangle(
         inner_glint[0],
         inner_glint[1],
@@ -371,17 +387,23 @@ fn triangle_vertices(size: f32, cx: f32, cy: f32, cos_r: f32, sin_r: f32) -> [Ve
         (half_base, height * 0.4),
     ];
     [
-        Vector2::new(cx + raw[0].0 * cos_r - raw[0].1 * sin_r, cy + raw[0].0 * sin_r + raw[0].1 * cos_r),
-        Vector2::new(cx + raw[1].0 * cos_r - raw[1].1 * sin_r, cy + raw[1].0 * sin_r + raw[1].1 * cos_r),
-        Vector2::new(cx + raw[2].0 * cos_r - raw[2].1 * sin_r, cy + raw[2].0 * sin_r + raw[2].1 * cos_r),
+        Vector2::new(
+            cx + raw[0].0 * cos_r - raw[0].1 * sin_r,
+            cy + raw[0].0 * sin_r + raw[0].1 * cos_r,
+        ),
+        Vector2::new(
+            cx + raw[1].0 * cos_r - raw[1].1 * sin_r,
+            cy + raw[1].0 * sin_r + raw[1].1 * cos_r,
+        ),
+        Vector2::new(
+            cx + raw[2].0 * cos_r - raw[2].1 * sin_r,
+            cy + raw[2].0 * sin_r + raw[2].1 * cos_r,
+        ),
     ]
 }
 
 /// Draws the waveform visualization (shown during listening state).
-fn draw_waveform(
-    draw_handle: &mut RaylibDrawHandle,
-    render_state: &OverlayRenderState,
-) {
+fn draw_waveform(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
     let center_x = render_state.cursor_x;
     let center_y = render_state.cursor_y;
     let bar_color = ds_color(design_system::colors::WAVEFORM_BAR);
@@ -393,7 +415,10 @@ fn draw_waveform(
     let total_width = bar_count as f32 * (bar_width + bar_gap) - bar_gap;
     let start_x = center_x - total_width / 2.0;
 
-    let history_offset = render_state.audio_power_history.len().saturating_sub(bar_count);
+    let history_offset = render_state
+        .audio_power_history
+        .len()
+        .saturating_sub(bar_count);
 
     for i in 0..bar_count {
         let power_level = render_state.audio_power_history[history_offset + i];
@@ -413,10 +438,7 @@ fn draw_waveform(
 
 /// Draws a smooth rotating arc loading animation.
 /// A partial blue ring sweeps around the cursor with a leading dot.
-fn draw_loading_arc(
-    draw_handle: &mut RaylibDrawHandle,
-    render_state: &OverlayRenderState,
-) {
+fn draw_loading_arc(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
     let center_x = render_state.cursor_x;
     let center_y = render_state.cursor_y;
     let time = draw_handle.get_time() as f32;
@@ -460,23 +482,27 @@ fn draw_loading_arc(
     let head_angle = base_angle + arc_sweep.to_radians();
     let dot_x = center_x + head_angle.cos() * radius;
     let dot_y = center_y + head_angle.sin() * radius;
-    draw_handle.draw_circle(dot_x as i32, dot_y as i32, 3.5, Color::new(blue_r, blue_g, blue_b, 240));
+    draw_handle.draw_circle(
+        dot_x as i32,
+        dot_y as i32,
+        3.5,
+        Color::new(blue_r, blue_g, blue_b, 240),
+    );
 
     // Subtle pulsing center dot
     let pulse = (time * 2.0).sin() * 0.5 + 0.5;
     let center_alpha = (pulse * 120.0 + 40.0) as u8;
     draw_handle.draw_circle(
-        center_x as i32, center_y as i32, 2.5,
+        center_x as i32,
+        center_y as i32,
+        2.5,
         Color::new(blue_r, blue_g, blue_b, center_alpha),
     );
 }
 
 /// Draws the speech bubble — glass-effect with blue tint and white text.
 /// Uses a custom TTF font when available, falls back to Raylib default.
-fn draw_speech_bubble(
-    draw_handle: &mut RaylibDrawHandle,
-    render_state: &OverlayRenderState,
-) {
+fn draw_speech_bubble(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
     if render_state.speech_bubble_text.is_empty() {
         return;
     }
@@ -494,9 +520,12 @@ fn draw_speech_bubble(
     let screen_w = draw_handle.get_screen_width() as f32;
     let screen_h = draw_handle.get_screen_height() as f32;
 
-    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
-    let cursor_center_x = render_state.cursor_x + offset;
-    let cursor_center_y = render_state.cursor_y + offset;
+    let (cursor_center_x, cursor_center_y) = visual_cursor_center(
+        screen_w,
+        screen_h,
+        render_state.cursor_x,
+        render_state.cursor_y,
+    );
 
     let font_size = 18.0f32;
     let spacing = 1.0f32;
@@ -538,8 +567,8 @@ fn draw_speech_bubble(
     } else {
         font_size
     };
-    let text_height =
-        wrapped_lines.len() as f32 * line_height + (wrapped_lines.len().saturating_sub(1) as f32 * line_gap);
+    let text_height = wrapped_lines.len() as f32 * line_height
+        + (wrapped_lines.len().saturating_sub(1) as f32 * line_gap);
 
     let bubble_width = text_width + pad_h * 2.0;
     let bubble_height = text_height + pad_v * 2.0;
@@ -594,7 +623,12 @@ fn draw_speech_bubble(
     );
 
     draw_handle.draw_rectangle_lines_ex(
-        Rectangle::new(bubble_x + 1.0, bubble_y + 1.0, bubble_width - 2.0, bubble_height - 2.0),
+        Rectangle::new(
+            bubble_x + 1.0,
+            bubble_y + 1.0,
+            bubble_width - 2.0,
+            bubble_height - 2.0,
+        ),
         1.0,
         Color::new(255, 255, 255, (opacity * 8.0) as u8),
     );
@@ -701,6 +735,32 @@ fn ds_color(color_tuple: (f32, f32, f32, f32)) -> Color {
     )
 }
 
+fn visual_cursor_center(
+    screen_w: f32,
+    screen_h: f32,
+    cursor_x: f32,
+    cursor_y: f32,
+) -> (f32, f32) {
+    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
+    let radius = offset + design_system::cursor::TRIANGLE_SIZE * 1.5;
+
+    let center_x = if cursor_x + radius > screen_w {
+        cursor_x - offset
+    } else {
+        cursor_x + offset
+    };
+    let center_y = if cursor_y + radius > screen_h {
+        cursor_y - offset
+    } else {
+        cursor_y + offset
+    };
+
+    (
+        center_x.clamp(0.0, screen_w.max(0.0)),
+        center_y.clamp(0.0, screen_h.max(0.0)),
+    )
+}
+
 /// System font paths to try for the speech bubble (in priority order).
 #[cfg(target_os = "macos")]
 const FONT_PATHS: &[&str] = &[
@@ -753,6 +813,8 @@ pub fn load_bubble_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> Option<
 
 /// Initializes the Raylib window for the overlay.
 pub fn create_overlay_window(
+    window_x: i32,
+    window_y: i32,
     window_width: i32,
     window_height: i32,
     #[allow(unused_variables)] platform: &PlatformInfo,
@@ -769,34 +831,74 @@ pub fn create_overlay_window(
             raylib::ffi::ConfigFlags::FLAG_WINDOW_TOPMOST as u32
                 | raylib::ffi::ConfigFlags::FLAG_WINDOW_MOUSE_PASSTHROUGH as u32,
         );
+        raylib::ffi::SetWindowPosition(window_x, window_y);
     }
+
+    #[cfg(target_os = "windows")]
+    configure_windows_overlay_window(window_x, window_y, window_width, window_height);
 
     #[cfg(target_os = "linux")]
     configure_linux_overlay_window(platform);
 
-    #[cfg(target_os = "windows")]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongW, SetWindowLongW, ShowWindow, GWL_EXSTYLE,
-            WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_TOPMOST,
-            SW_HIDE, SW_SHOWNOACTIVATE,
-        };
-        let hwnd = raylib::ffi::GetWindowHandle();
-        ShowWindow(hwnd, SW_HIDE);
-        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-        SetWindowLongW(
-            hwnd,
-            GWL_EXSTYLE,
-            ex_style | WS_EX_TOOLWINDOW as i32 | WS_EX_LAYERED as i32
-                     | WS_EX_TRANSPARENT as i32 | WS_EX_TOPMOST as i32,
-        );
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        log::info!("Windows overlay: set WS_EX_TOOLWINDOW (hidden from taskbar)");
-    }
-
     raylib_handle.set_target_fps(60);
 
     (raylib_handle, raylib_thread)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_overlay_window(
+    window_x: i32,
+    window_y: i32,
+    window_width: i32,
+    window_height: i32,
+) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
+    };
+
+    let glfw_window = unsafe { raylib::ffi::GetWindowHandle() };
+    if glfw_window.is_null() {
+        log::warn!("Windows overlay: Raylib did not return a native window handle");
+        return;
+    }
+
+    let hwnd = glfw_window as HWND;
+    if hwnd.is_null() {
+        log::warn!("Windows overlay: Win32 window handle was null");
+        return;
+    }
+
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+
+        let current_ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let updated_ex_style = (current_ex_style
+            | WS_EX_LAYERED
+            | WS_EX_TRANSPARENT
+            | WS_EX_TOOLWINDOW
+            | WS_EX_NOACTIVATE)
+            & !WS_EX_APPWINDOW;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, updated_ex_style as isize);
+
+        let _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            window_x,
+            window_y,
+            window_width,
+            window_height,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE,
+        );
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+
+    log::info!("Windows overlay: applied toolwindow/noactivate/transparent styles");
 }
 
 #[cfg(target_os = "linux")]
@@ -804,7 +906,10 @@ fn configure_linux_overlay_window(platform: &PlatformInfo) {
     match platform.display_server {
         Some(DisplayServer::X11) => {
             if let Err(error) = apply_x11_overlay_hints() {
-                log::warn!("Linux X11 overlay: failed to set skip-taskbar hints: {}", error);
+                log::warn!(
+                    "Linux X11 overlay: failed to set skip-taskbar hints: {}",
+                    error
+                );
             } else {
                 log::info!("Linux X11 overlay: enabled skip-taskbar and skip-pager hints");
             }
@@ -815,7 +920,9 @@ fn configure_linux_overlay_window(platform: &PlatformInfo) {
             );
         }
         None => {
-            log::debug!("Linux overlay: display server unknown, leaving default window-manager hints");
+            log::debug!(
+                "Linux overlay: display server unknown, leaving default window-manager hints"
+            );
         }
     }
 }
@@ -831,6 +938,9 @@ fn apply_x11_overlay_hints() -> Result<(), String> {
     if x11_window == 0 {
         return Err("GLFW did not return an X11 window id".into());
     }
+    let x11_window: u32 = x11_window
+        .try_into()
+        .map_err(|_| "Failed to convert X11 window id to u32".to_string())?;
 
     let (connection, _) =
         x11rb::connect(None).map_err(|error| format!("Failed to connect to X11: {error}"))?;
@@ -877,9 +987,19 @@ fn apply_x11_overlay_hints() -> Result<(), String> {
 fn intern_atom<C: Connection>(connection: &C, name: &[u8]) -> Result<u32, String> {
     connection
         .intern_atom(false, name)
-        .map_err(|error| format!("Failed to request atom {}: {error}", String::from_utf8_lossy(name)))?
+        .map_err(|error| {
+            format!(
+                "Failed to request atom {}: {error}",
+                String::from_utf8_lossy(name)
+            )
+        })?
         .reply()
-        .map_err(|error| format!("Failed to read atom {}: {error}", String::from_utf8_lossy(name)))
+        .map_err(|error| {
+            format!(
+                "Failed to read atom {}: {error}",
+                String::from_utf8_lossy(name)
+            )
+        })
         .map(|reply| reply.atom)
 }
 

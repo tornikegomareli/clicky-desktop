@@ -35,10 +35,8 @@ pub struct ParsedPointingCoordinate {
 // Matches: [POINT:x,y:label] or [POINT:x,y:label:screenN] or [POINT:none]
 // The tag must appear at the end of the response text.
 static POINT_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$",
-    )
-    .expect("POINT tag regex must compile")
+    Regex::new(r"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$")
+        .expect("POINT tag regex must compile")
 });
 
 /// Parses Claude's response text to extract the spoken portion and any
@@ -86,9 +84,7 @@ pub fn parse_claude_response(full_response_text: &str) -> PointingParseResult {
             .get(3)
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
-        let screen_number = captures
-            .get(4)
-            .and_then(|m| m.as_str().parse::<u32>().ok());
+        let screen_number = captures.get(4).and_then(|m| m.as_str().parse::<u32>().ok());
 
         ParsedPointingCoordinate {
             screenshot_pixel_x,
@@ -110,8 +106,7 @@ mod tests {
 
     #[test]
     fn parse_point_with_label() {
-        let result =
-            parse_claude_response("click the save button [POINT:1100,42:save button]");
+        let result = parse_claude_response("click the save button [POINT:1100,42:save button]");
         assert_eq!(result.spoken_text, "click the save button");
         let pointing = result.pointing.unwrap();
         assert_eq!(pointing.screenshot_pixel_x, 1100.0);
@@ -122,9 +117,8 @@ mod tests {
 
     #[test]
     fn parse_point_with_screen_number() {
-        let result = parse_claude_response(
-            "that's on your other monitor [POINT:400,300:terminal:screen2]",
-        );
+        let result =
+            parse_claude_response("that's on your other monitor [POINT:400,300:terminal:screen2]");
         assert_eq!(result.spoken_text, "that's on your other monitor");
         let pointing = result.pointing.unwrap();
         assert_eq!(pointing.screenshot_pixel_x, 400.0);
@@ -143,7 +137,10 @@ mod tests {
     #[test]
     fn parse_no_point_tag() {
         let result = parse_claude_response("just a regular response with no pointing");
-        assert_eq!(result.spoken_text, "just a regular response with no pointing");
+        assert_eq!(
+            result.spoken_text,
+            "just a regular response with no pointing"
+        );
         assert!(result.pointing.is_none());
     }
 

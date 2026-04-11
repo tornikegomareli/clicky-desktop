@@ -1,11 +1,10 @@
+use log::info;
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+use tray_icon::Icon;
 /// System tray icon using the `tray-icon` crate.
 /// Cross-platform: works on Windows (shell notification area),
 /// Linux (StatusNotifierItem / libappindicator), and macOS.
-
 use tray_icon::{TrayIcon, TrayIconBuilder};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::Icon;
-use log::info;
 
 /// Events emitted by the system tray menu.
 #[derive(Debug, Clone)]
@@ -40,8 +39,12 @@ impl ClickyTrayIcon {
         let quit_menu_item_id = quit_item.id().clone();
 
         let tray_menu = Menu::new();
-        tray_menu.append(&toggle_overlay_item).map_err(|e| e.to_string())?;
-        tray_menu.append(&settings_item).map_err(|e| e.to_string())?;
+        tray_menu
+            .append(&toggle_overlay_item)
+            .map_err(|e| e.to_string())?;
+        tray_menu
+            .append(&settings_item)
+            .map_err(|e| e.to_string())?;
         tray_menu.append(&quit_item).map_err(|e| e.to_string())?;
 
         // Create a simple blue triangle icon (16x16 RGBA)
@@ -103,13 +106,12 @@ fn create_blue_triangle_icon() -> Icon {
         for x in left_x..=right_x {
             let pixel_index = ((y * width + x) * 4) as usize;
             // Blue: #3380FF
-            rgba_pixels[pixel_index] = 51;      // R
-            rgba_pixels[pixel_index + 1] = 128;  // G
-            rgba_pixels[pixel_index + 2] = 255;  // B
-            rgba_pixels[pixel_index + 3] = 255;  // A
+            rgba_pixels[pixel_index] = 51; // R
+            rgba_pixels[pixel_index + 1] = 128; // G
+            rgba_pixels[pixel_index + 2] = 255; // B
+            rgba_pixels[pixel_index + 3] = 255; // A
         }
     }
 
-    Icon::from_rgba(rgba_pixels, width, height)
-        .expect("Failed to create tray icon from RGBA data")
+    Icon::from_rgba(rgba_pixels, width, height).expect("Failed to create tray icon from RGBA data")
 }

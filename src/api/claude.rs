@@ -1,13 +1,11 @@
+use futures_util::StreamExt;
+use log::{debug, error};
 /// Claude API client with SSE streaming — ported from ClaudeAPI.swift:1-291.
 ///
-/// Sends screenshots + transcript to the Cloudflare Worker proxy at /chat,
-/// which forwards to Anthropic's Messages API. Parses the SSE stream to
-/// extract text deltas progressively.
-
+/// Sends screenshots + transcript to Anthropic's Messages API and parses the
+/// SSE stream to extract text deltas progressively.
 use reqwest::Client;
 use serde_json::json;
-use futures_util::StreamExt;
-use log::{error, debug};
 
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 
@@ -55,22 +53,17 @@ pub struct ScreenshotForClaude {
     pub label: String,
 }
 
-/// Sends screenshots + user transcript to Claude via the Cloudflare Worker proxy
-/// and streams the response text progressively.
+/// Sends screenshots + user transcript to Claude and streams the response text progressively.
 ///
 /// # Arguments
 /// * `http_client` - Reusable reqwest client (connection pooling / TLS session reuse)
-/// * `worker_base_url` - Base URL of the Cloudflare Worker (e.g., "https://clicky-proxy.workers.dev")
 /// * `model` - Claude model ID (e.g., "claude-sonnet-4-20250514")
 /// * `system_prompt` - System prompt text
-/// * `messages` - Pre-built messages array (from ConversationHistory::build_claude_messages_payload)
+/// * `messages` - Pre-built messages array
 /// * `on_text_delta` - Callback invoked with each text chunk as it arrives
-/// Streams a Claude response via SSE.
-/// Supports direct API mode (api_key) and worker proxy mode (worker_base_url).
 pub async fn stream_claude_response(
     http_client: &Client,
-    api_key: Option<&str>,
-    worker_base_url: Option<&str>,
+    api_key: &str,
     model: &str,
     system_prompt: &str,
     messages: Vec<serde_json::Value>,
@@ -84,32 +77,16 @@ pub async fn stream_claude_response(
         "stream": true,
     });
 
-    let response = if let Some(key) = api_key {
-        // Direct Anthropic API
-        debug!("Sending Claude request to Anthropic API (direct)");
-        http_client
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| ClaudeApiError::NetworkError(e.to_string()))?
-    } else if let Some(base_url) = worker_base_url {
-        // Worker proxy
-        let url = format!("{}/chat", base_url);
-        debug!("Sending Claude request to {}", url);
-        http_client
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| ClaudeApiError::NetworkError(e.to_string()))?
-    } else {
-        return Err(ClaudeApiError::NetworkError("No API key or worker URL configured".into()));
-    };
+    debug!("Sending Claude request to Anthropic API");
+    let response = http_client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| ClaudeApiError::NetworkError(e.to_string()))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -148,16 +125,12 @@ pub async fn stream_claude_response(
                         continue;
                     }
 
-                    if let Ok(parsed_event) =
-                        serde_json::from_str::<serde_json::Value>(json_data)
-                    {
+                    if let Ok(parsed_event) = serde_json::from_str::<serde_json::Value>(json_data) {
                         // Extract text from content_block_delta events
                         if parsed_event["type"] == "content_block_delta"
                             && parsed_event["delta"]["type"] == "text_delta"
                         {
-                            if let Some(text_chunk) =
-                                parsed_event["delta"]["text"].as_str()
-                            {
+                            if let Some(text_chunk) = parsed_event["delta"]["text"].as_str() {
                                 full_response_text.push_str(text_chunk);
                                 on_text_delta(text_chunk);
                             }

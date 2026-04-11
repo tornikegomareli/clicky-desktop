@@ -2,12 +2,11 @@
 /// Ported from AssemblyAIStreamingTranscriptionProvider.swift:1-478.
 ///
 /// Flow:
-/// 1. Fetch a temporary token from the Cloudflare Worker /transcribe-token
+/// 1. Fetch a temporary token from AssemblyAI
 /// 2. Open a WebSocket to AssemblyAI's streaming endpoint
 /// 3. Stream PCM16 audio frames as binary messages
 /// 4. Receive JSON turn-based transcript updates
 /// 5. On hotkey release, send ForceEndpoint message and finalize
-
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, warn};
 use reqwest::Client;
@@ -24,50 +23,25 @@ const AUDIO_SAMPLE_RATE: u32 = 16000;
 const AUDIO_ENCODING: &str = "pcm_s16le";
 const SPEECH_MODEL: &str = "u3-rt-pro";
 
-/// Grace period after requesting final transcript before force-delivering.
-const FINAL_TRANSCRIPT_GRACE_PERIOD_SECONDS: f64 = 1.4;
-
-/// Fallback deadline if the grace period doesn't produce a result.
-const FINAL_TRANSCRIPT_FALLBACK_DELAY_SECONDS: f64 = 2.8;
-
 /// Fetches a temporary streaming token from AssemblyAI.
-///
-/// Supports two modes:
-/// - **Direct API**: pass `api_key` to call AssemblyAI directly (for development)
-/// - **Worker proxy**: pass `worker_base_url` to go through a Cloudflare Worker (for distribution)
-///
 /// The token is valid for 480 seconds (8 minutes).
 pub async fn fetch_temporary_streaming_token(
     http_client: &Client,
-    api_key: Option<&str>,
-    worker_base_url: Option<&str>,
+    api_key: &str,
 ) -> Result<String, TranscriptionError> {
-    let response = if let Some(key) = api_key {
-        // Direct API call — GET with auth header
-        http_client
-            .get("https://streaming.assemblyai.com/v3/token?expires_in_seconds=480")
-            .header("Authorization", key)
-            .send()
-            .await
-            .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?
-    } else if let Some(base_url) = worker_base_url {
-        // Worker proxy — proxy adds the API key
-        http_client
-            .post(format!("{}/transcribe-token", base_url))
-            .send()
-            .await
-            .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?
-    } else {
-        return Err(TranscriptionError::TokenFetchError(
-            "No API key or worker URL configured".into(),
-        ));
-    };
+    let response = http_client
+        .get("https://streaming.assemblyai.com/v3/token?expires_in_seconds=480")
+        .header("Authorization", api_key)
+        .send()
+        .await
+        .map_err(|e| TranscriptionError::TokenFetchError(e.to_string()))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(TranscriptionError::TokenFetchError(format!(
-            "HTTP {}: {}", status, body
+            "HTTP {}: {}",
+            status, body
         )));
     }
 
@@ -110,18 +84,18 @@ pub enum TranscriptUpdate {
 
 enum ControlMessage {
     RequestFinalTranscript,
-    Cancel,
 }
 
 impl StreamingTranscriptionSession {
     /// Starts a new streaming session. Connects to AssemblyAI's WebSocket
     /// and spawns background tasks for sending audio and receiving transcripts.
-    pub async fn start(
-        temporary_auth_token: &str,
-    ) -> Result<Self, TranscriptionError> {
+    pub async fn start(temporary_auth_token: &str) -> Result<Self, TranscriptionError> {
         let websocket_url = format!(
             "{}?sample_rate={}&encoding={}&speech_model={}&token={}",
-            ASSEMBLYAI_WEBSOCKET_BASE_URL, AUDIO_SAMPLE_RATE, AUDIO_ENCODING, SPEECH_MODEL,
+            ASSEMBLYAI_WEBSOCKET_BASE_URL,
+            AUDIO_SAMPLE_RATE,
+            AUDIO_ENCODING,
+            SPEECH_MODEL,
             temporary_auth_token,
         );
 
@@ -138,10 +112,9 @@ impl StreamingTranscriptionSession {
             .body(())
             .map_err(|err| TranscriptionError::ConnectionError(err.to_string()))?;
 
-        let (websocket_stream, _response) =
-            tokio_tungstenite::connect_async(request)
-                .await
-                .map_err(|err| TranscriptionError::ConnectionError(err.to_string()))?;
+        let (websocket_stream, _response) = tokio_tungstenite::connect_async(request)
+            .await
+            .map_err(|err| TranscriptionError::ConnectionError(err.to_string()))?;
 
         debug!("Connected to AssemblyAI WebSocket");
 
@@ -179,12 +152,6 @@ impl StreamingTranscriptionSession {
                                 if let Err(err) = websocket_writer.send(Message::Text(force_endpoint_message.to_string().into())).await {
                                     error!("WebSocket ForceEndpoint send error: {}", err);
                                 }
-                            }
-                            Some(ControlMessage::Cancel) => {
-                                debug!("Cancel received, sending Terminate");
-                                let terminate = serde_json::json!({"type": "Terminate"});
-                                let _ = websocket_writer.send(Message::Text(terminate.to_string().into())).await;
-                                break;
                             }
                             None => {
                                 debug!("Control channel closed, sending Terminate");
@@ -293,7 +260,10 @@ impl StreamingTranscriptionSession {
                         break;
                     }
                     _ => {
-                        debug!("Ignoring AssemblyAI message type: {}", envelope.message_type);
+                        debug!(
+                            "Ignoring AssemblyAI message type: {}",
+                            envelope.message_type
+                        );
                     }
                 }
             }
@@ -316,14 +286,6 @@ impl StreamingTranscriptionSession {
         })
     }
 
-    /// Sends a chunk of PCM16 audio data to the WebSocket.
-    pub async fn send_audio(&self, pcm16_audio_data: Vec<u8>) -> Result<(), TranscriptionError> {
-        self.audio_sender
-            .send(pcm16_audio_data)
-            .await
-            .map_err(|_| TranscriptionError::SessionClosed)
-    }
-
     /// Requests the final transcript — called when the user releases the hotkey.
     /// Sends a ForceEndpoint message to AssemblyAI to flush pending audio.
     pub async fn request_final_transcript(&self) -> Result<(), TranscriptionError> {
@@ -331,11 +293,6 @@ impl StreamingTranscriptionSession {
             .send(ControlMessage::RequestFinalTranscript)
             .await
             .map_err(|_| TranscriptionError::SessionClosed)
-    }
-
-    /// Cancels the session and closes the WebSocket.
-    pub async fn cancel(&self) {
-        let _ = self.control_sender.send(ControlMessage::Cancel).await;
     }
 
     /// Returns a clone of the audio sender for use in a separate task.

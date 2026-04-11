@@ -1,14 +1,13 @@
+use super::{HotkeyBackend, PushToTalkTransition};
+use crate::config::PushToTalkHotkey;
 /// Evdev-based hotkey detection for Linux Wayland.
 /// Reads keyboard events directly from /dev/input/ since X11 XGrabKey
 /// doesn't work on XWayland.
 ///
 /// Push-to-talk: Hold Ctrl+` (tilda/grave) to record, release to stop.
 /// Requires user to be in the 'input' group.
-
 use evdev::{Device, InputEventKind, Key};
 use std::sync::mpsc;
-use super::{HotkeyBackend, PushToTalkTransition};
-use crate::config::PushToTalkHotkey;
 
 pub struct EvdevHotkeyManager {
     event_rx: mpsc::Receiver<PushToTalkTransition>,

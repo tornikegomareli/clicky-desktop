@@ -54,8 +54,10 @@ pub fn map_screenshot_pixels_to_global_display_coordinates(
     display: &DisplayInfo,
 ) -> GlobalDisplayCoordinate {
     // Step 1: Clamp to screenshot pixel bounds
-    let clamped_pixel_x = screenshot_pixel_x.clamp(0.0, display.screenshot_width_pixels as f64 - 1.0);
-    let clamped_pixel_y = screenshot_pixel_y.clamp(0.0, display.screenshot_height_pixels as f64 - 1.0);
+    let clamped_pixel_x =
+        screenshot_pixel_x.clamp(0.0, display.screenshot_width_pixels as f64 - 1.0);
+    let clamped_pixel_y =
+        screenshot_pixel_y.clamp(0.0, display.screenshot_height_pixels as f64 - 1.0);
 
     // Step 2: Scale from screenshot pixels to display points
     let scale_x = display.display_width_points / display.screenshot_width_pixels as f64;
@@ -132,8 +134,7 @@ mod tests {
     #[test]
     fn clamps_out_of_bounds_coordinates() {
         let display = make_test_display();
-        let coord =
-            map_screenshot_pixels_to_global_display_coordinates(-50.0, 2000.0, &display);
+        let coord = map_screenshot_pixels_to_global_display_coordinates(-50.0, 2000.0, &display);
         assert!(coord.x >= 0.0);
         assert!(coord.y <= display.global_origin_y + display.display_height_points);
     }

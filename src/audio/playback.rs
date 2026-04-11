@@ -1,9 +1,8 @@
+use super::AudioError;
 /// MP3 playback using rodio.
 /// Plays TTS audio from memory (bytes received from ElevenLabs API).
-
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::io::Cursor;
-use super::AudioError;
 
 /// Manages audio output for TTS playback.
 pub struct AudioPlayer {

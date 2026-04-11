@@ -45,7 +45,11 @@ impl fmt::Display for PlatformInfo {
                 };
 
                 if let Some(compositor) = &self.wayland_compositor {
-                    write!(formatter, "Linux ({}, {:?})", display_server_label, compositor)
+                    write!(
+                        formatter,
+                        "Linux ({}, {:?})",
+                        display_server_label, compositor
+                    )
                 } else {
                     write!(formatter, "Linux ({})", display_server_label)
                 }
