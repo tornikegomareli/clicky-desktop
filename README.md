@@ -22,7 +22,7 @@ Built with Rust and Raylib. Runs on Linux and Windows.
 1. Hold the push-to-talk hotkey (Ctrl+Space by default)
 2. Speak your question
 3. Release — Clicky captures your screen and transcribes your voice
-4. Screenshots + transcript go to Claude, which responds about what's on your screen
+4. The screen under your cursor plus your transcript go to Claude, which responds about what you're looking at
 5. The response is spoken aloud via ElevenLabs
 6. A blue cursor flies to the relevant UI element on screen
 
@@ -102,6 +102,7 @@ windowrulev2 = noanim, class:clicky-overlay
 ```bash
 CLICKY_SIMULATE=1 cargo run          # test animations without API calls
 CLICKY_FORCE_SETUP_WINDOW=1 cargo run # re-open the setup window
+CLICKY_GRID_OVERLAY=1 cargo run      # re-enable screenshot coordinate grid overlay
 ```
 
 ## Credits

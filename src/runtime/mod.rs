@@ -166,7 +166,7 @@ pub async fn run_llm_pipeline(
 ) {
     let (cursor_x, cursor_y) = cursor_position;
     let capture = match tokio::task::spawn_blocking(move || {
-        screenshot::capture_all_screens(cursor_x, cursor_y, &platform)
+        screenshot::capture_primary_focus_screen(cursor_x, cursor_y, &platform)
     })
     .await
     {
@@ -265,20 +265,37 @@ pub async fn run_llm_pipeline(
                 }
             }
 
-            let computer_use_global_coordinate = detect_computer_use_coordinate(
-                &http_client,
-                &capture,
-                anthropic_api_key.as_deref(),
-                &transcript,
-            )
-            .await;
-
             let _ = ui_tx.send(UiEvent::LlmResponse {
                 spoken_text: parsed.spoken_text,
                 pointing_instruction,
                 display_infos: capture.display_infos.clone(),
-                computer_use_global_coordinate,
+                computer_use_global_coordinate: None,
             });
+
+            if let Some(anthropic_api_key) = anthropic_api_key.clone() {
+                if let Some((cursor_screenshot, cursor_display)) =
+                    extract_cursor_screen_data(&capture)
+                {
+                    let computer_use_client = http_client.clone();
+                    let computer_use_ui_tx = ui_tx.clone();
+                    let computer_use_transcript = transcript.clone();
+
+                    tokio::spawn(async move {
+                        if let Some(global_coordinate) = detect_computer_use_coordinate(
+                            &computer_use_client,
+                            &anthropic_api_key,
+                            &cursor_screenshot,
+                            &cursor_display,
+                            &computer_use_transcript,
+                        )
+                        .await
+                        {
+                            let _ = computer_use_ui_tx
+                                .send(UiEvent::ComputerUseCoordinate(global_coordinate));
+                        }
+                    });
+                }
+            }
         }
         Err(error) => {
             log::error!("LLM API error: {}", error);
@@ -328,30 +345,30 @@ fn log_debug_screenshots(capture: &screenshot::CaptureResult) {
 #[cfg(not(debug_assertions))]
 fn log_debug_screenshots(_capture: &screenshot::CaptureResult) {}
 
-async fn detect_computer_use_coordinate(
-    http_client: &reqwest::Client,
+fn extract_cursor_screen_data(
     capture: &screenshot::CaptureResult,
-    anthropic_api_key: Option<&str>,
-    transcript: &str,
-) -> Option<(f64, f64)> {
-    let anthropic_api_key = anthropic_api_key?;
-    let cursor_display = capture
-        .display_infos
-        .iter()
-        .find(|display| display.is_cursor_display)?;
-    let cursor_screenshot = capture
+) -> Option<(Vec<u8>, core::coordinate_mapper::DisplayInfo)> {
+    capture
         .screenshots
         .iter()
         .zip(capture.display_infos.iter())
         .find(|(_, display)| display.is_cursor_display)
-        .map(|(screenshot, _)| screenshot)?;
+        .map(|(screenshot, display)| (screenshot.jpeg_data.clone(), display.clone()))
+}
 
+async fn detect_computer_use_coordinate(
+    http_client: &reqwest::Client,
+    anthropic_api_key: &str,
+    cursor_screenshot: &[u8],
+    cursor_display: &core::coordinate_mapper::DisplayInfo,
+    transcript: &str,
+) -> Option<(f64, f64)> {
     info!("Running Computer Use API for precise coordinate detection...");
 
     let coordinate = api::computer_use::detect_element_location(
         http_client,
         anthropic_api_key,
-        &cursor_screenshot.jpeg_data,
+        cursor_screenshot,
         transcript,
         cursor_display.display_width_points,
         cursor_display.display_height_points,

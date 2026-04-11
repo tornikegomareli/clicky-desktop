@@ -45,6 +45,7 @@ examples:
 - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]""#;
 
 /// A screenshot image to send to Claude for vision analysis.
+#[derive(Clone)]
 pub struct ScreenshotForClaude {
     /// JPEG image bytes
     pub jpeg_data: Vec<u8>,
