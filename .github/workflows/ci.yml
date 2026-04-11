@@ -2,9 +2,21 @@ name: CI
 
 on:
   pull_request:
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "assets/**"
+      - ".github/ISSUE_TEMPLATE/**"
   push:
     branches:
       - main
+    paths-ignore:
+      - "*.md"
+      - "docs/**"
+      - "LICENSE"
+      - "assets/**"
+      - ".github/ISSUE_TEMPLATE/**"
 
 jobs:
   test-linux:
