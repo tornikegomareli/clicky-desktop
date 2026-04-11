@@ -1,4 +1,4 @@
-# Clicky Desktop
+# Clicky for Linux and Windows
 
 [![CI](https://github.com/tornikegomareli/clicky-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/tornikegomareli/clicky-desktop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tornikegomareli/clicky-desktop)](https://github.com/tornikegomareli/clicky-desktop/releases/latest)
