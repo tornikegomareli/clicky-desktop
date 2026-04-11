@@ -1,5 +1,8 @@
 # Clicky for Linux and Windows
 
+![CleanShot 2026-04-11 at 06 30 09](https://github.com/user-attachments/assets/fc60e950-1ff8-4a9e-89fa-ed81c355daec)
+
+
 [![CI](https://github.com/tornikegomareli/clicky-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/tornikegomareli/clicky-desktop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tornikegomareli/clicky-desktop)](https://github.com/tornikegomareli/clicky-desktop/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
