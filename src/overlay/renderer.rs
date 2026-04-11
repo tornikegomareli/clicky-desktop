@@ -19,6 +19,36 @@ use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as XprotoConnectionExt, Pr
 #[cfg(target_os = "linux")]
 use x11rb::wrapper::ConnectionExt as XprotoWrapperExt;
 
+/// A screen annotation mapped to overlay-local coordinates, ready to render.
+pub struct MappedAnnotation {
+    pub kind: AnnotationKind,
+    pub opacity: f32,
+}
+
+/// The visual shape of an annotation in screen-local coordinates.
+pub enum AnnotationKind {
+    Highlight {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        label: String,
+    },
+    Circle {
+        x: f32,
+        y: f32,
+        radius: f32,
+        label: String,
+    },
+    Arrow {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        label: String,
+    },
+}
+
 /// Navigation mode for the blue cursor triangle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CursorNavigationMode {
@@ -94,6 +124,7 @@ pub struct OverlayRenderState {
     pub speech_bubble_visible_char_count: usize,
     pub speech_bubble_opacity: f32,
     pub bubble_font: Option<Font>,
+    pub annotations: Vec<MappedAnnotation>,
 }
 
 impl OverlayRenderState {
@@ -113,6 +144,7 @@ impl OverlayRenderState {
             speech_bubble_visible_char_count: 0,
             speech_bubble_opacity: 0.0,
             bubble_font: None,
+            annotations: Vec::new(),
         }
     }
 
@@ -154,6 +186,15 @@ impl OverlayRenderState {
             if self.speech_bubble_opacity <= 0.0 {
                 self.speech_bubble_visible_char_progress = 0.0;
                 self.speech_bubble_visible_char_count = 0;
+            }
+        }
+
+        // 3. Fade in annotations
+        for annotation in &mut self.annotations {
+            if is_visible {
+                annotation.opacity = (annotation.opacity + delta_seconds as f32 * 4.0).min(1.0);
+            } else {
+                annotation.opacity = (annotation.opacity - delta_seconds as f32 * 5.0).max(0.0);
             }
         }
     }
@@ -262,6 +303,7 @@ impl OverlayRenderState {
         self.speech_bubble_visible_char_count = 0;
         self.cursor_rotation_degrees = design_system::cursor::DEFAULT_ROTATION_DEGREES;
         self.cursor_scale = 1.0;
+        self.annotations.clear();
     }
 }
 
@@ -271,6 +313,10 @@ pub fn draw_overlay_frame(draw_handle: &mut RaylibDrawHandle, render_state: &Ove
 
     match render_state.voice_state {
         VoiceState::Idle | VoiceState::Responding => {
+            if !render_state.annotations.is_empty() {
+                draw_annotations(draw_handle, render_state);
+            }
+
             draw_cursor_triangle(draw_handle, render_state);
 
             let bubble_visible = (render_state.navigation_mode
@@ -288,6 +334,183 @@ pub fn draw_overlay_frame(draw_handle: &mut RaylibDrawHandle, render_state: &Ove
         VoiceState::Processing => {
             draw_loading_arc(draw_handle, render_state);
         }
+    }
+}
+
+/// Draws all screen annotations (highlights, circles, arrows) with fade-in opacity.
+fn draw_annotations(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
+    for annotation in &render_state.annotations {
+        if annotation.opacity <= 0.01 {
+            continue;
+        }
+        let alpha_scale = annotation.opacity;
+
+        match &annotation.kind {
+            AnnotationKind::Highlight {
+                x,
+                y,
+                w,
+                h,
+                label,
+            } => {
+                let fill = design_system::colors::ANNOTATION_HIGHLIGHT;
+                let border = design_system::colors::ANNOTATION_HIGHLIGHT_BORDER;
+                let rect = Rectangle::new(*x, *y, *w, *h);
+
+                // Fill
+                draw_handle.draw_rectangle_rounded(
+                    rect,
+                    0.05,
+                    8,
+                    Color::new(
+                        (fill.0 * 255.0) as u8,
+                        (fill.1 * 255.0) as u8,
+                        (fill.2 * 255.0) as u8,
+                        (fill.3 * alpha_scale * 255.0) as u8,
+                    ),
+                );
+                // Border
+                draw_handle.draw_rectangle_rounded_lines(
+                    rect,
+                    0.05,
+                    8,
+                    Color::new(
+                        (border.0 * 255.0) as u8,
+                        (border.1 * 255.0) as u8,
+                        (border.2 * 255.0) as u8,
+                        (border.3 * alpha_scale * 255.0) as u8,
+                    ),
+                );
+                // Label above the rectangle
+                if !label.is_empty() {
+                    draw_annotation_label(draw_handle, render_state, label, *x, *y - 18.0, alpha_scale);
+                }
+            }
+            AnnotationKind::Circle {
+                x,
+                y,
+                radius,
+                label,
+            } => {
+                let fill = design_system::colors::ANNOTATION_CIRCLE;
+                let border = design_system::colors::ANNOTATION_CIRCLE_BORDER;
+
+                // Fill
+                draw_handle.draw_circle(
+                    *x as i32,
+                    *y as i32,
+                    *radius,
+                    Color::new(
+                        (fill.0 * 255.0) as u8,
+                        (fill.1 * 255.0) as u8,
+                        (fill.2 * 255.0) as u8,
+                        (fill.3 * alpha_scale * 255.0) as u8,
+                    ),
+                );
+                // Border
+                draw_handle.draw_circle_lines(
+                    *x as i32,
+                    *y as i32,
+                    *radius,
+                    Color::new(
+                        (border.0 * 255.0) as u8,
+                        (border.1 * 255.0) as u8,
+                        (border.2 * 255.0) as u8,
+                        (border.3 * alpha_scale * 255.0) as u8,
+                    ),
+                );
+                // Label below the circle
+                if !label.is_empty() {
+                    draw_annotation_label(
+                        draw_handle,
+                        render_state,
+                        label,
+                        *x - 30.0,
+                        *y + *radius + 6.0,
+                        alpha_scale,
+                    );
+                }
+            }
+            AnnotationKind::Arrow {
+                x1,
+                y1,
+                x2,
+                y2,
+                label,
+            } => {
+                let arrow_color = design_system::colors::ANNOTATION_ARROW;
+                let color = Color::new(
+                    (arrow_color.0 * 255.0) as u8,
+                    (arrow_color.1 * 255.0) as u8,
+                    (arrow_color.2 * 255.0) as u8,
+                    (arrow_color.3 * alpha_scale * 255.0) as u8,
+                );
+
+                // Shaft
+                draw_handle.draw_line_ex(
+                    Vector2::new(*x1, *y1),
+                    Vector2::new(*x2, *y2),
+                    2.5,
+                    color,
+                );
+
+                // Arrowhead — triangle at the endpoint
+                let dx = x2 - x1;
+                let dy = y2 - y1;
+                let len = (dx * dx + dy * dy).sqrt().max(0.001);
+                let ux = dx / len;
+                let uy = dy / len;
+                let head_size = 10.0f32;
+                // Perpendicular
+                let px = -uy * head_size * 0.5;
+                let py = ux * head_size * 0.5;
+
+                draw_handle.draw_triangle(
+                    Vector2::new(*x2, *y2),
+                    Vector2::new(x2 - ux * head_size + px, y2 - uy * head_size + py),
+                    Vector2::new(x2 - ux * head_size - px, y2 - uy * head_size - py),
+                    color,
+                );
+
+                // Label at midpoint
+                if !label.is_empty() {
+                    let mid_x = (x1 + x2) / 2.0;
+                    let mid_y = (y1 + y2) / 2.0;
+                    draw_annotation_label(draw_handle, render_state, label, mid_x, mid_y - 14.0, alpha_scale);
+                }
+            }
+        }
+    }
+}
+
+/// Draws a small label for an annotation at the given position.
+fn draw_annotation_label(
+    draw_handle: &mut RaylibDrawHandle,
+    render_state: &OverlayRenderState,
+    text: &str,
+    x: f32,
+    y: f32,
+    alpha_scale: f32,
+) {
+    let label_color = design_system::colors::ANNOTATION_LABEL;
+    let color = Color::new(
+        (label_color.0 * 255.0) as u8,
+        (label_color.1 * 255.0) as u8,
+        (label_color.2 * 255.0) as u8,
+        (label_color.3 * alpha_scale * 255.0) as u8,
+    );
+    let shadow_color = Color::new(0, 0, 0, (0.5 * alpha_scale * 255.0) as u8);
+    let font_size = 13.0;
+    let spacing = 0.5;
+
+    if let Some(ref font) = render_state.bubble_font {
+        // Shadow
+        draw_handle.draw_text_ex(font, text, Vector2::new(x + 1.0, y + 1.0), font_size, spacing, shadow_color);
+        // Text
+        draw_handle.draw_text_ex(font, text, Vector2::new(x, y), font_size, spacing, color);
+    } else {
+        draw_handle.draw_text(text, x as i32 + 1, y as i32 + 1, font_size as i32, shadow_color);
+        draw_handle.draw_text(text, x as i32, y as i32, font_size as i32, color);
     }
 }
 
