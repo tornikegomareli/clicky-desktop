@@ -314,6 +314,7 @@ fn main() {
                                     pointing_instruction: None,
                                     display_infos: vec![],
                                     computer_use_global_coordinate: Some((target_x, target_y)),
+                                    annotations: vec![],
                                 });
                             });
                         } else if let Some(cancel_tx) = active_session_cancel.take() {
@@ -416,6 +417,7 @@ fn main() {
                     pointing_instruction,
                     display_infos,
                     computer_use_global_coordinate,
+                    annotations,
                 } => {
                     if voice_state != VoiceState::Processing {
                         continue;
@@ -483,6 +485,52 @@ fn main() {
                             );
                         }
                     }
+
+                    // Map annotation coordinates from screenshot pixel space to overlay-local space
+                    let cursor_display = core::coordinate_mapper::find_target_display(None, &display_infos);
+                    let mapped_annotations: Vec<overlay::renderer::MappedAnnotation> = annotations
+                        .into_iter()
+                        .filter_map(|ann| {
+                            let display = cursor_display?;
+                            let kind = match ann {
+                                core::point_parser::ScreenAnnotation::Highlight { x1, y1, x2, y2, label } => {
+                                    let c1 = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(x1, y1, display);
+                                    let c2 = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(x2, y2, display);
+                                    let lx = (c1.x - overlay_x as f64) as f32;
+                                    let ly = (c1.y - overlay_y as f64) as f32;
+                                    let lx2 = (c2.x - overlay_x as f64) as f32;
+                                    let ly2 = (c2.y - overlay_y as f64) as f32;
+                                    overlay::renderer::AnnotationKind::Highlight {
+                                        x: lx, y: ly, w: lx2 - lx, h: ly2 - ly, label,
+                                    }
+                                }
+                                core::point_parser::ScreenAnnotation::Circle { x, y, radius, label } => {
+                                    let c = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(x, y, display);
+                                    // Scale radius from screenshot pixels to display points
+                                    let scale = display.display_width_points / display.screenshot_width_pixels as f64;
+                                    overlay::renderer::AnnotationKind::Circle {
+                                        x: (c.x - overlay_x as f64) as f32,
+                                        y: (c.y - overlay_y as f64) as f32,
+                                        radius: (radius * scale) as f32,
+                                        label,
+                                    }
+                                }
+                                core::point_parser::ScreenAnnotation::Arrow { x1, y1, x2, y2, label } => {
+                                    let c1 = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(x1, y1, display);
+                                    let c2 = core::coordinate_mapper::map_screenshot_pixels_to_global_display_coordinates(x2, y2, display);
+                                    overlay::renderer::AnnotationKind::Arrow {
+                                        x1: (c1.x - overlay_x as f64) as f32,
+                                        y1: (c1.y - overlay_y as f64) as f32,
+                                        x2: (c2.x - overlay_x as f64) as f32,
+                                        y2: (c2.y - overlay_y as f64) as f32,
+                                        label,
+                                    }
+                                }
+                            };
+                            Some(overlay::renderer::MappedAnnotation { kind, opacity: 0.0 })
+                        })
+                        .collect();
+                    render_state.annotations = mapped_annotations;
 
                     // Set friendly bubble phrase (full response goes to TTS voice)
                     let is_pointing =
