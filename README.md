@@ -33,6 +33,12 @@ You need keys from three services:
 
 On first launch, Clicky opens a setup window where you enter these. They're stored locally in your platform's config directory and only sent to their respective APIs.
 
+If you're running from source, copy `.env.example` to `.env` and fill in your keys:
+
+```bash
+cp .env.example .env
+```
+
 ## Download
 
 Grab the latest release from the [Releases page](https://github.com/tornikegomareli/clicky-desktop/releases).
