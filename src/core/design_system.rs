@@ -13,6 +13,14 @@ pub mod colors {
 
     /// Waveform bar color
     pub const WAVEFORM_BAR: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.8);
+
+    /// Screen annotation colors
+    pub const ANNOTATION_HIGHLIGHT: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.15);
+    pub const ANNOTATION_HIGHLIGHT_BORDER: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.6);
+    pub const ANNOTATION_CIRCLE: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.2);
+    pub const ANNOTATION_CIRCLE_BORDER: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.7);
+    pub const ANNOTATION_ARROW: (f32, f32, f32, f32) = (0.2, 0.5, 1.0, 0.8);
+    pub const ANNOTATION_LABEL: (f32, f32, f32, f32) = (0.95, 0.95, 0.96, 0.9);
 }
 
 /// Cursor triangle geometry.
