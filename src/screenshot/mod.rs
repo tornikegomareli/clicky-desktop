@@ -13,7 +13,7 @@ use image::imageops::FilterType;
 use std::fmt;
 use std::io::Cursor;
 
-const MAX_WIDTH: u32 = 1024;
+const MAX_WIDTH: u32 = 1280;
 const JPEG_QUALITY: u8 = 80;
 
 #[cfg(target_os = "windows")]
@@ -40,7 +40,6 @@ fn get_windows_virtual_desktop_bounds() -> Option<(i32, i32, i32, i32)> {
     None
 }
 
-#[derive(Clone)]
 pub struct CaptureResult {
     pub screenshots: Vec<ScreenshotForClaude>,
     pub display_infos: Vec<DisplayInfo>,
@@ -67,28 +66,11 @@ pub fn capture_all_screens(
     cursor_y: f32,
     platform: &PlatformInfo,
 ) -> Result<CaptureResult, ScreenshotError> {
-    capture_screens(cursor_x, cursor_y, platform, false)
-}
-
-pub fn capture_primary_focus_screen(
-    cursor_x: f32,
-    cursor_y: f32,
-    platform: &PlatformInfo,
-) -> Result<CaptureResult, ScreenshotError> {
-    capture_screens(cursor_x, cursor_y, platform, true)
-}
-
-fn capture_screens(
-    cursor_x: f32,
-    cursor_y: f32,
-    platform: &PlatformInfo,
-    cursor_only: bool,
-) -> Result<CaptureResult, ScreenshotError> {
     if platform.display_server == Some(DisplayServer::Wayland) {
         match &platform.wayland_compositor {
             // Hyprland/Sway: use grim (wlroots, silent)
             Some(WaylandCompositor::Hyprland | WaylandCompositor::Sway) => {
-                if let Ok(result) = capture_with_grim(cursor_x, cursor_y, cursor_only) {
+                if let Ok(result) = capture_with_grim(cursor_x, cursor_y) {
                     return Ok(result);
                 }
                 log::debug!("grim not available, falling back to xcap");
@@ -96,23 +78,19 @@ fn capture_screens(
 
             // GNOME: disable animations around xcap to prevent flash
             _ => {
-                return capture_gnome_no_flash(cursor_x, cursor_y, cursor_only);
+                return capture_gnome_no_flash(cursor_x, cursor_y);
             }
         }
     }
 
     // Fallback: xcap (X11, Windows, macOS)
-    capture_with_xcap(cursor_x, cursor_y, cursor_only)
+    capture_with_xcap(cursor_x, cursor_y)
 }
 
 /// GNOME-specific: briefly disable animations to prevent the screenshot flash.
 /// The portal screenshot flash is an animation effect — disabling animations
 /// via gsettings suppresses it entirely.
-fn capture_gnome_no_flash(
-    cursor_x: f32,
-    cursor_y: f32,
-    cursor_only: bool,
-) -> Result<CaptureResult, ScreenshotError> {
+fn capture_gnome_no_flash(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
     // Save current state
     let animations_on = gsettings_get_bool("org.gnome.desktop.interface", "enable-animations");
     let sounds_on = gsettings_get_bool("org.gnome.desktop.sound", "event-sounds");
@@ -125,7 +103,7 @@ fn capture_gnome_no_flash(
         gsettings_set("org.gnome.desktop.sound", "event-sounds", "false");
     }
 
-    let result = capture_with_xcap(cursor_x, cursor_y, cursor_only);
+    let result = capture_with_xcap(cursor_x, cursor_y);
 
     // Restore
     if animations_on {
@@ -246,35 +224,20 @@ fn parse_sway_monitors(stdout: &[u8]) -> Option<Vec<WlrMonitorInfo>> {
 /// Capture each monitor individually using grim -o <output_name>.
 /// Uses hyprctl/swaymsg to get accurate logical monitor dimensions
 /// so coordinate mapping works correctly.
-fn capture_with_grim(
-    cursor_x: f32,
-    cursor_y: f32,
-    cursor_only: bool,
-) -> Result<CaptureResult, ScreenshotError> {
+fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
     let monitors = query_wlr_monitors().ok_or_else(|| {
         ScreenshotError::CaptureError("Cannot query monitors via hyprctl/swaymsg".into())
     })?;
 
-    let filtered_monitors: Vec<&WlrMonitorInfo> = monitors
-        .iter()
-        .filter(|monitor| {
-            let is_cursor_display = cursor_x as f64 >= monitor.x
-                && (cursor_x as f64) < monitor.x + monitor.width
-                && cursor_y as f64 >= monitor.y
-                && (cursor_y as f64) < monitor.y + monitor.height;
-            !cursor_only || is_cursor_display
-        })
-        .collect();
-
-    if filtered_monitors.is_empty() {
+    if monitors.is_empty() {
         return Err(ScreenshotError::NoMonitors);
     }
 
-    let total = filtered_monitors.len();
+    let total = monitors.len();
     let mut screenshots = Vec::with_capacity(total);
     let mut display_infos = Vec::with_capacity(total);
 
-    for (i, monitor) in filtered_monitors.iter().enumerate() {
+    for (i, monitor) in monitors.iter().enumerate() {
         let screen_num = (i + 1) as u32;
 
         // Capture this specific output
@@ -420,11 +383,7 @@ pub fn detect_overlay_bounds(platform: &PlatformInfo) -> (i32, i32, i32, i32) {
 /// Capture using xcap (cross-platform).
 /// On Windows after GLFW init, the process is per-monitor DPI aware, so
 /// xcap, GetCursorPos, and the overlay window all use physical pixels.
-fn capture_with_xcap(
-    cursor_x: f32,
-    cursor_y: f32,
-    cursor_only: bool,
-) -> Result<CaptureResult, ScreenshotError> {
+fn capture_with_xcap(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, ScreenshotError> {
     let monitors =
         xcap::Monitor::all().map_err(|e| ScreenshotError::CaptureError(e.to_string()))?;
 
@@ -432,30 +391,11 @@ fn capture_with_xcap(
         return Err(ScreenshotError::NoMonitors);
     }
 
-    let filtered_monitors: Vec<&xcap::Monitor> = monitors
-        .iter()
-        .filter(|monitor| {
-            let mon_x = monitor.x().unwrap_or(0) as f32;
-            let mon_y = monitor.y().unwrap_or(0) as f32;
-            let mon_w = monitor.width().unwrap_or(1920) as f32;
-            let mon_h = monitor.height().unwrap_or(1080) as f32;
-            let is_cursor_display = cursor_x >= mon_x
-                && cursor_x < mon_x + mon_w
-                && cursor_y >= mon_y
-                && cursor_y < mon_y + mon_h;
-            !cursor_only || is_cursor_display
-        })
-        .collect();
-
-    if filtered_monitors.is_empty() {
-        return Err(ScreenshotError::NoMonitors);
-    }
-
-    let total = filtered_monitors.len();
+    let total = monitors.len();
     let mut screenshots = Vec::with_capacity(total);
     let mut display_infos = Vec::with_capacity(total);
 
-    for (i, monitor) in filtered_monitors.iter().enumerate() {
+    for (i, monitor) in monitors.iter().enumerate() {
         let screen_num = (i + 1) as u32;
 
         let mon_x = monitor.x().unwrap_or(0) as f32;
@@ -522,7 +462,7 @@ fn scale_image(img: &image::RgbaImage) -> image::RgbaImage {
     let (w, h) = (img.width(), img.height());
     if w > MAX_WIDTH {
         let new_h = (h as f64 * MAX_WIDTH as f64 / w as f64) as u32;
-        image::imageops::resize(img, MAX_WIDTH, new_h, FilterType::Triangle)
+        image::imageops::resize(img, MAX_WIDTH, new_h, FilterType::Lanczos3)
     } else {
         img.clone()
     }
@@ -533,7 +473,7 @@ fn scale_image(img: &image::RgbaImage) -> image::RgbaImage {
 fn draw_coordinate_grid(img: &mut image::RgbaImage) {
     let grid_enabled = std::env::var("CLICKY_GRID_OVERLAY")
         .map(|v| v != "0")
-        .unwrap_or(false);
+        .unwrap_or(true);
     if !grid_enabled {
         return;
     }

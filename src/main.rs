@@ -494,23 +494,6 @@ fn main() {
                     claude_pipeline_active = false;
                     processing_since = None;
                 }
-                UiEvent::ComputerUseCoordinate((global_x, global_y)) => {
-                    if voice_state != VoiceState::Responding {
-                        continue;
-                    }
-
-                    if render_state.navigation_mode == CursorNavigationMode::FollowingMouse {
-                        info!(
-                            "Using deferred Computer Use coordinate: ({:.1}, {:.1})",
-                            global_x, global_y
-                        );
-                        render_state.start_flight_to(
-                            global_x - overlay_x as f64,
-                            global_y - overlay_y as f64,
-                            render_state.speech_bubble_text.clone(),
-                        );
-                    }
-                }
                 UiEvent::TtsAudio(mp3_bytes) => {
                     if let Some(ref mut player) = audio_player {
                         player.play_mp3(mp3_bytes);

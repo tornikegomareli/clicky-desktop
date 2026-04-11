@@ -18,7 +18,6 @@ pub enum UiEvent {
         /// When present, this takes priority over the POINT tag coordinate.
         computer_use_global_coordinate: Option<(f64, f64)>,
     },
-    ComputerUseCoordinate((f64, f64)),
     PipelineError(String),
     /// MP3 bytes received from ElevenLabs TTS, ready for playback.
     TtsAudio(Vec<u8>),
