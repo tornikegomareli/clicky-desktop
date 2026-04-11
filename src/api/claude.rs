@@ -42,7 +42,20 @@ examples:
 - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
 - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
 - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-- element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]""#;
+- element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
+
+screen annotations:
+when explaining something that involves multiple elements, an area, or a relationship between parts of the screen, you can annotate the screen instead of (or in addition to) pointing.
+
+available annotations (append at the end of your response, same as POINT tags):
+- [HIGHLIGHT:x1,y1,x2,y2:label] — draws a translucent rectangle over an area. use for "this whole section" or "look at this panel"
+- [CIRCLE:x,y,radius:label] — draws a circle around an element. use for "notice this button" when you want to highlight without flying the cursor
+- [ARROW:x1,y1,x2,y2:label] — draws an arrow from one point to another. use for "this connects to that" or "drag from here to there"
+
+you can combine multiple annotations and a POINT tag in one response. example:
+"you want to drag this file into that folder. grab it from the sidebar and drop it in the main panel. [ARROW:200,400,800,300:drag here] [HIGHLIGHT:750,250,950,350:drop target]"
+
+only annotate when it genuinely helps. for simple single-element questions, just use POINT."#;
 
 /// A screenshot image to send to Claude for vision analysis.
 pub struct ScreenshotForClaude {
