@@ -278,6 +278,7 @@ pub async fn run_llm_pipeline(
                 pointing_instruction,
                 display_infos: capture.display_infos.clone(),
                 computer_use_global_coordinate,
+                annotations: parsed.annotations,
             });
         }
         Err(error) => {

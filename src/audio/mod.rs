@@ -3,6 +3,7 @@ pub mod playback;
 
 use crate::app::state_machine::PointingInstruction;
 use crate::core::coordinate_mapper::DisplayInfo;
+use crate::core::point_parser::ScreenAnnotation;
 use std::fmt;
 
 /// Events sent from async background tasks to the synchronous render loop.
@@ -17,6 +18,8 @@ pub enum UiEvent {
         /// Pre-computed global coordinate from Computer Use API (more precise than POINT tags).
         /// When present, this takes priority over the POINT tag coordinate.
         computer_use_global_coordinate: Option<(f64, f64)>,
+        /// Screen annotations to draw on the overlay (highlights, circles, arrows).
+        annotations: Vec<ScreenAnnotation>,
     },
     PipelineError(String),
     /// MP3 bytes received from ElevenLabs TTS, ready for playback.
