@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Clicky
+Comment=AI companion with voice input, screen capture, and cursor overlay
+Exec=clicky-desktop
+Icon=clicky-desktop
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupNotify=false
+Keywords=AI;assistant;voice;companion;

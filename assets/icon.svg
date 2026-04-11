@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="45%" r="50%">
+      <stop offset="0%" stop-color="#3380FF" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#3380FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A1A24"/>
+      <stop offset="100%" stop-color="#111118"/>
+    </linearGradient>
+    <linearGradient id="tri" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#5599FF"/>
+      <stop offset="100%" stop-color="#2266EE"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="108" ry="108" fill="url(#bg)"/>
+  <!-- Subtle glow behind triangle -->
+  <circle cx="256" cy="240" r="180" fill="url(#glow)"/>
+  <!-- Blue triangle pointing up-right (rotated ~-35deg like the cursor) -->
+  <g transform="translate(256,256) rotate(-35)">
+    <polygon points="0,-150 -120,100 120,100" fill="url(#tri)"/>
+  </g>
+  <!-- Small highlight on upper edge -->
+  <g transform="translate(256,256) rotate(-35)">
+    <polygon points="0,-150 -40,-50 40,-50" fill="#77AAFF" opacity="0.3"/>
+  </g>
+</svg>
