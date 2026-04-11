@@ -29,6 +29,7 @@ fn main() {
     // Load .env file if present (ignored if missing)
     let _ = dotenvy::dotenv();
     env_logger::init();
+    configure_windows_dpi_awareness();
 
     let mut app_config = config::AppConfig::load();
 
@@ -120,12 +121,15 @@ fn main() {
     let mut last_config_poll_at = Instant::now();
     let mut last_config_modified_at = config::config_file_modified_at();
 
-    // Detect actual screen size for the overlay window
-    let (screen_w, screen_h) = screenshot::detect_screen_size(&platform);
-    info!("Overlay window size: {}x{}", screen_w, screen_h);
+    // Detect overlay bounds. On Windows this spans the full virtual desktop.
+    let (overlay_x, overlay_y, screen_w, screen_h) = screenshot::detect_overlay_bounds(&platform);
+    info!(
+        "Overlay bounds: origin=({}, {}) size={}x{}",
+        overlay_x, overlay_y, screen_w, screen_h
+    );
 
     let (mut raylib_handle, raylib_thread) =
-        renderer::create_overlay_window(screen_w, screen_h, &platform);
+        renderer::create_overlay_window(overlay_x, overlay_y, screen_w, screen_h, &platform);
 
     // Log actual Raylib window size (may differ from requested due to DPI scaling)
     let actual_w = raylib_handle.get_screen_width();
@@ -436,7 +440,11 @@ fn main() {
                     if let Some((global_x, global_y)) = computer_use_global_coordinate {
                         info!("Using Computer Use coordinate: ({:.1}, {:.1}) — cursor at ({:.1}, {:.1})",
                             global_x, global_y, render_state.cursor_x, render_state.cursor_y);
-                        render_state.start_flight_to(global_x, global_y, spoken_text.clone());
+                        render_state.start_flight_to(
+                            global_x - overlay_x as f64,
+                            global_y - overlay_y as f64,
+                            spoken_text.clone(),
+                        );
                     } else if let Some(ref instruction) = pointing_instruction {
                         info!(
                             "POINT tag: screenshot_pixel=({}, {}), label='{}', screen={:?}",
@@ -463,7 +471,11 @@ fn main() {
                             info!("Mapped coordinate: ({:.1}, {:.1}) — cursor currently at ({:.1}, {:.1})",
                                 coord.x, coord.y, render_state.cursor_x, render_state.cursor_y);
 
-                            render_state.start_flight_to(coord.x, coord.y, spoken_text.clone());
+                            render_state.start_flight_to(
+                                coord.x - overlay_x as f64,
+                                coord.y - overlay_y as f64,
+                                spoken_text.clone(),
+                            );
                         } else {
                             log::warn!(
                                 "No matching display found for screen {:?}",
@@ -576,15 +588,19 @@ fn main() {
         let mouse_position = raylib_handle.get_mouse_position();
         cursor_tracker.update_from_window(mouse_position.x, mouse_position.y);
         let current_mouse_position = cursor_tracker.get_position();
+        let current_mouse_local_position = (
+            current_mouse_position.0 - overlay_x as f32,
+            current_mouse_position.1 - overlay_y as f32,
+        );
 
         // Update cursor position
         if render_state.navigation_mode == CursorNavigationMode::FollowingMouse {
-            render_state.cursor_x = current_mouse_position.0;
-            render_state.cursor_y = current_mouse_position.1;
+            render_state.cursor_x = current_mouse_local_position.0;
+            render_state.cursor_y = current_mouse_local_position.1;
         }
 
         // Update overlay state (animations, typing, flight)
-        render_state.update(delta_seconds, Some(current_mouse_position));
+        render_state.update(delta_seconds, Some(current_mouse_local_position));
 
         // Draw the overlay
         let mut draw_handle = raylib_handle.begin_drawing(&raylib_thread);
@@ -593,3 +609,28 @@ fn main() {
 
     info!("Clicky Desktop shutting down");
 }
+
+#[cfg(target_os = "windows")]
+fn configure_windows_dpi_awareness() {
+    use windows_sys::Win32::UI::HiDpi::{
+        SetProcessDpiAwareness, SetProcessDpiAwarenessContext,
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, PROCESS_PER_MONITOR_DPI_AWARE,
+    };
+
+    let aware_v2 =
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if aware_v2 != 0 {
+        log::info!("Enabled Windows DPI awareness: Per-Monitor V2");
+        return;
+    }
+
+    let per_monitor = unsafe { SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE) };
+    if per_monitor >= 0 {
+        log::info!("Enabled Windows DPI awareness: Per-Monitor");
+    } else {
+        log::warn!("Could not enable Windows DPI awareness before overlay setup");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_windows_dpi_awareness() {}

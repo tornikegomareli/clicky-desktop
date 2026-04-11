@@ -16,6 +16,30 @@ use std::io::Cursor;
 const MAX_WIDTH: u32 = 1280;
 const JPEG_QUALITY: u8 = 80;
 
+#[cfg(target_os = "windows")]
+fn get_windows_virtual_desktop_bounds() -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
+
+    let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+    let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+    let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
+    let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+
+    if width > 0 && height > 0 {
+        Some((origin_x, origin_y, width, height))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn get_windows_virtual_desktop_bounds() -> Option<(i32, i32, i32, i32)> {
+    None
+}
+
 pub struct CaptureResult {
     pub screenshots: Vec<ScreenshotForClaude>,
     pub display_infos: Vec<DisplayInfo>,
@@ -308,6 +332,28 @@ fn capture_with_grim(cursor_x: f32, cursor_y: f32) -> Result<CaptureResult, Scre
 /// Queries the primary monitor's dimensions for overlay window sizing.
 /// Falls back to 1920x1080 if detection fails.
 pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
+    let (_, _, width, height) = detect_overlay_bounds(platform);
+    (width, height)
+}
+
+/// Returns the overlay origin and size.
+/// On Windows this covers the full virtual desktop so the overlay can span
+/// every monitor, including layouts with negative monitor coordinates.
+pub fn detect_overlay_bounds(platform: &PlatformInfo) -> (i32, i32, i32, i32) {
+    #[cfg(target_os = "windows")]
+    if matches!(platform.os, crate::app::platform::OperatingSystem::Windows) {
+        if let Some((origin_x, origin_y, width, height)) = get_windows_virtual_desktop_bounds() {
+            log::info!(
+                "Detected Windows virtual desktop: origin=({}, {}) size={}x{}",
+                origin_x,
+                origin_y,
+                width,
+                height
+            );
+            return (origin_x, origin_y, width, height);
+        }
+    }
+
     // Try wlroots monitor query first (Hyprland/Sway)
     if platform.display_server == Some(DisplayServer::Wayland) {
         if let Some(monitors) = query_wlr_monitors() {
@@ -315,7 +361,7 @@ pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
                 let w = primary.width as i32;
                 let h = primary.height as i32;
                 log::info!("Detected screen size: {}x{} (from {})", w, h, primary.name);
-                return (w, h);
+                return (0, 0, w, h);
             }
         }
     }
@@ -326,12 +372,12 @@ pub fn detect_screen_size(platform: &PlatformInfo) -> (i32, i32) {
             let w = m.width().unwrap_or(1920) as i32;
             let h = m.height().unwrap_or(1080) as i32;
             log::info!("Detected screen size: {}x{} (from xcap)", w, h);
-            return (w, h);
+            return (0, 0, w, h);
         }
     }
 
     log::warn!("Could not detect screen size, defaulting to 1920x1080");
-    (1920, 1080)
+    (0, 0, 1920, 1080)
 }
 
 /// Capture using xcap (cross-platform).

@@ -293,9 +293,12 @@ pub fn draw_overlay_frame(draw_handle: &mut RaylibDrawHandle, render_state: &Ove
 
 /// Draws the blue equilateral triangle cursor with triangle-shaped bloom effect.
 fn draw_cursor_triangle(draw_handle: &mut RaylibDrawHandle, render_state: &OverlayRenderState) {
-    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
-    let center_x = render_state.cursor_x + offset;
-    let center_y = render_state.cursor_y + offset;
+    let (center_x, center_y) = visual_cursor_center(
+        draw_handle.get_screen_width() as f32,
+        draw_handle.get_screen_height() as f32,
+        render_state.cursor_x,
+        render_state.cursor_y,
+    );
     let base_size = design_system::cursor::TRIANGLE_SIZE * render_state.cursor_scale as f32;
     let glow_base_size = design_system::cursor::TRIANGLE_SIZE;
     let rotation_radians = render_state.cursor_rotation_degrees.to_radians() as f32;
@@ -517,9 +520,12 @@ fn draw_speech_bubble(draw_handle: &mut RaylibDrawHandle, render_state: &Overlay
     let screen_w = draw_handle.get_screen_width() as f32;
     let screen_h = draw_handle.get_screen_height() as f32;
 
-    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
-    let cursor_center_x = render_state.cursor_x + offset;
-    let cursor_center_y = render_state.cursor_y + offset;
+    let (cursor_center_x, cursor_center_y) = visual_cursor_center(
+        screen_w,
+        screen_h,
+        render_state.cursor_x,
+        render_state.cursor_y,
+    );
 
     let font_size = 18.0f32;
     let spacing = 1.0f32;
@@ -729,6 +735,32 @@ fn ds_color(color_tuple: (f32, f32, f32, f32)) -> Color {
     )
 }
 
+fn visual_cursor_center(
+    screen_w: f32,
+    screen_h: f32,
+    cursor_x: f32,
+    cursor_y: f32,
+) -> (f32, f32) {
+    let offset = design_system::cursor::OFFSET_FROM_SYSTEM_CURSOR;
+    let radius = offset + design_system::cursor::TRIANGLE_SIZE * 1.5;
+
+    let center_x = if cursor_x + radius > screen_w {
+        cursor_x - offset
+    } else {
+        cursor_x + offset
+    };
+    let center_y = if cursor_y + radius > screen_h {
+        cursor_y - offset
+    } else {
+        cursor_y + offset
+    };
+
+    (
+        center_x.clamp(0.0, screen_w.max(0.0)),
+        center_y.clamp(0.0, screen_h.max(0.0)),
+    )
+}
+
 /// System font paths to try for the speech bubble (in priority order).
 #[cfg(target_os = "macos")]
 const FONT_PATHS: &[&str] = &[
@@ -781,6 +813,8 @@ pub fn load_bubble_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> Option<
 
 /// Initializes the Raylib window for the overlay.
 pub fn create_overlay_window(
+    window_x: i32,
+    window_y: i32,
     window_width: i32,
     window_height: i32,
     #[allow(unused_variables)] platform: &PlatformInfo,
@@ -797,7 +831,11 @@ pub fn create_overlay_window(
             raylib::ffi::ConfigFlags::FLAG_WINDOW_TOPMOST as u32
                 | raylib::ffi::ConfigFlags::FLAG_WINDOW_MOUSE_PASSTHROUGH as u32,
         );
+        raylib::ffi::SetWindowPosition(window_x, window_y);
     }
+
+    #[cfg(target_os = "windows")]
+    configure_windows_overlay_window(window_x, window_y, window_width, window_height);
 
     #[cfg(target_os = "linux")]
     configure_linux_overlay_window(platform);
@@ -805,6 +843,62 @@ pub fn create_overlay_window(
     raylib_handle.set_target_fps(60);
 
     (raylib_handle, raylib_thread)
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_overlay_window(
+    window_x: i32,
+    window_y: i32,
+    window_width: i32,
+    window_height: i32,
+) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        GWL_EXSTYLE, HWND_TOPMOST, LWA_ALPHA, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
+    };
+
+    let glfw_window = unsafe { raylib::ffi::GetWindowHandle() };
+    if glfw_window.is_null() {
+        log::warn!("Windows overlay: Raylib did not return a native window handle");
+        return;
+    }
+
+    let hwnd = glfw_window as HWND;
+    if hwnd.is_null() {
+        log::warn!("Windows overlay: Win32 window handle was null");
+        return;
+    }
+
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+
+        let current_ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        let updated_ex_style = (current_ex_style
+            | WS_EX_LAYERED
+            | WS_EX_TRANSPARENT
+            | WS_EX_TOOLWINDOW
+            | WS_EX_NOACTIVATE)
+            & !WS_EX_APPWINDOW;
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, updated_ex_style as isize);
+
+        let _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            window_x,
+            window_y,
+            window_width,
+            window_height,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE,
+        );
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+
+    log::info!("Windows overlay: applied toolwindow/noactivate/transparent styles");
 }
 
 #[cfg(target_os = "linux")]
