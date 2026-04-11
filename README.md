@@ -1,6 +1,6 @@
 # Clicky Desktop
 
-Cross-platform implementation of [Clicky](https://github.com/farzaa/clicky), an AI companion that lives in your system tray, listens to your voice, looks at your screen, educates you and points at things.
+Cross-platform implementation of [Clicky](https://github.com/farzaa/clicky) for Linux and Windows users, an AI companion that lives in your system tray, listens to your voice, looks at your screen, educates you and points at things.
 
 Hold the push-to-talk hotkey, ask a question, release. Clicky can see your screen, sends it with your transcript to Claude, speaks the answer back, and flies a blue triangle cursor to the UI element it's referencing.
 
