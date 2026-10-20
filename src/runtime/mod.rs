@@ -3,52 +3,206 @@ use crate::app;
 use crate::app::state_machine::PointingInstruction;
 use crate::audio;
 use crate::audio::UiEvent;
-use crate::config;
+use crate::config::{self, LlmProviderType, SttProviderType, TtsProviderType};
 use crate::core;
 use crate::core::pcm16_converter;
 use crate::screenshot;
 use log::info;
 use std::sync::mpsc as std_mpsc;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum LlmProvider {
     Anthropic,
+    OpenAiCompat {
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+    },
     Disabled,
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum SttConfig {
+    AssemblyAi(String),
+    Whisper {
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+    },
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum TtsConfig {
+    ElevenLabs {
+        api_key: String,
+        voice_id: Option<String>,
+    },
+    EdgeTts {
+        voice: Option<String>,
+    },
+    OpenAiCompat {
+        base_url: String,
+        api_key: Option<String>,
+        model: String,
+        voice: String,
+    },
+    System,
+}
+
 pub fn log_runtime_config_state(app_config: &config::AppConfig, simulation_mode: bool) {
-    if app_config.anthropic_api_key.is_some() {
-        info!("LLM: direct Anthropic API (Claude)");
-    } else {
-        log::warn!("Set ANTHROPIC_API_KEY to enable AI responses");
+    match app_config.llm_provider {
+        LlmProviderType::Anthropic => {
+            if app_config.anthropic_api_key.is_some() {
+                info!("LLM: Anthropic Claude");
+            } else {
+                log::warn!("Set ANTHROPIC_API_KEY to enable AI responses");
+            }
+        }
+        LlmProviderType::OpenRouter => {
+            info!("LLM: OpenRouter (model: {})", 
+                app_config.custom_llm_model.as_deref().unwrap_or(LlmProviderType::OpenRouter.default_model()));
+        }
+        LlmProviderType::Ollama => {
+            info!("LLM: Local Ollama (url: {}, model: {})",
+                app_config.custom_llm_base_url.as_deref().unwrap_or(LlmProviderType::Ollama.default_base_url()),
+                app_config.custom_llm_model.as_deref().unwrap_or(LlmProviderType::Ollama.default_model()));
+        }
+        LlmProviderType::Gemini => {
+            info!("LLM: Google Gemini / Antigravity");
+        }
+        LlmProviderType::Mistral => {
+            info!("LLM: Mistral AI (Pixtral)");
+        }
+        LlmProviderType::Custom => {
+            info!("LLM: Custom OpenAI-compatible endpoint");
+        }
     }
 
-    if !app_config.assemblyai_api_key.is_some() && !simulation_mode {
-        log::warn!("Set ASSEMBLYAI_API_KEY to enable transcription");
-    } else if app_config.assemblyai_api_key.is_some() {
-        info!("Transcription: direct AssemblyAI API");
+    match app_config.stt_provider {
+        SttProviderType::AssemblyAI => {
+            if app_config.assemblyai_api_key.is_some() {
+                info!("Transcription: AssemblyAI (Real-time)");
+            } else if !simulation_mode {
+                log::warn!("Set ASSEMBLYAI_API_KEY to enable AssemblyAI transcription");
+            }
+        }
+        SttProviderType::Groq => {
+            if app_config.groq_api_key.is_some() {
+                info!("Transcription: Groq Whisper (Ultra-fast)");
+            } else {
+                log::warn!("Set GROQ_API_KEY to enable Groq Whisper transcription");
+            }
+        }
+        SttProviderType::OpenAiCompat => {
+            info!("Transcription: OpenAI / Local Whisper");
+        }
     }
 
-    if !app_config.elevenlabs_api_key.is_some() {
-        log::warn!("Set ELEVENLABS_API_KEY to enable TTS");
-    } else {
-        info!("TTS: direct ElevenLabs API");
+    match app_config.tts_provider {
+        TtsProviderType::ElevenLabs => {
+            if app_config.elevenlabs_api_key.is_some() {
+                info!("TTS: ElevenLabs");
+            } else {
+                log::warn!("Set ELEVENLABS_API_KEY to enable ElevenLabs TTS");
+            }
+        }
+        TtsProviderType::EdgeTts => {
+            info!("TTS: Microsoft Edge Neural TTS (Free)");
+        }
+        TtsProviderType::OpenAiCompat => {
+            info!("TTS: OpenAI / Kokoro compatible");
+        }
+        TtsProviderType::System => {
+            info!("TTS: System Fallback (espeak-ng)");
+        }
     }
 }
 
 pub async fn run_transcription_bridge(
     audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
     ui_tx: std_mpsc::Sender<UiEvent>,
-    api_key: Option<String>,
+    stt_config: Option<SttConfig>,
     cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let Some(api_key) = api_key else {
+    let Some(config) = stt_config else {
         let _ = ui_tx.send(UiEvent::TranscriptionError(
-            "AssemblyAI API key is not configured".into(),
+            "Transcription provider is not configured".into(),
         ));
         return;
     };
 
+    match config {
+        SttConfig::AssemblyAi(api_key) => {
+            run_assemblyai_bridge(audio_rx, ui_tx, api_key, cancel_rx).await;
+        }
+        SttConfig::Whisper { base_url, api_key, model } => {
+            run_whisper_bridge(audio_rx, ui_tx, base_url, api_key, model, cancel_rx).await;
+        }
+    }
+}
+
+async fn run_whisper_bridge(
+    audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
+    ui_tx: std_mpsc::Sender<UiEvent>,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
+) {
+    let (pcm_tx, pcm_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+
+    // Spawn blocking task to collect all audio chunks until audio_rx closes
+    tokio::task::spawn_blocking(move || {
+        let mut buffer: Vec<u8> = Vec::new();
+        while let Ok(chunk) = audio_rx.recv() {
+            let pcm16 = pcm16_converter::convert_float32_to_pcm16_mono(
+                &chunk.samples,
+                chunk.sample_rate,
+                chunk.channels,
+            );
+            buffer.extend_from_slice(&pcm16);
+        }
+        let _ = pcm_tx.send(buffer);
+    });
+
+    // Wait until key release (cancel_rx fires)
+    let _ = cancel_rx.await;
+
+    // Await audio collection
+    let pcm_data = pcm_rx.await.unwrap_or_default();
+    if pcm_data.is_empty() {
+        let _ = ui_tx.send(UiEvent::FinalTranscript(String::new()));
+        return;
+    }
+
+    let http_client = reqwest::Client::new();
+    match api::whisper_stt::transcribe_audio_pcm(
+        &http_client,
+        &base_url,
+        api_key.as_deref(),
+        &model,
+        &pcm_data,
+        16000,
+    )
+    .await
+    {
+        Ok(text) => {
+            info!("Whisper transcription finished: '{}'", text);
+            let _ = ui_tx.send(UiEvent::FinalTranscript(text));
+        }
+        Err(err) => {
+            log::error!("Whisper transcription failed: {}", err);
+            let _ = ui_tx.send(UiEvent::TranscriptionError(err));
+        }
+    }
+}
+
+async fn run_assemblyai_bridge(
+    audio_rx: std_mpsc::Receiver<audio::capture::AudioChunk>,
+    ui_tx: std_mpsc::Sender<UiEvent>,
+    api_key: String,
+    cancel_rx: tokio::sync::oneshot::Receiver<()>,
+) {
     let http_client = reqwest::Client::new();
 
     let token = match api::assemblyai::fetch_temporary_streaming_token(&http_client, &api_key).await
@@ -155,9 +309,7 @@ pub async fn run_llm_pipeline(
     http_client: reqwest::Client,
     provider: LlmProvider,
     anthropic_api_key: Option<String>,
-    elevenlabs_api_key: Option<String>,
-    elevenlabs_voice_id: Option<String>,
-    tts_enabled: bool,
+    tts_config: Option<TtsConfig>,
     transcript: String,
     cursor_position: (f32, f32),
     history_exchanges: Vec<(String, String)>,
@@ -190,12 +342,6 @@ pub async fn run_llm_pipeline(
 
     log_debug_screenshots(&capture);
 
-    let mut messages = Vec::new();
-    for (user_text, assistant_text) in &history_exchanges {
-        messages.push(serde_json::json!({"role": "user", "content": user_text}));
-        messages.push(serde_json::json!({"role": "assistant", "content": assistant_text}));
-    }
-
     let system_prompt = api::claude::COMPANION_VOICE_RESPONSE_SYSTEM_PROMPT;
 
     let result: Result<String, String> = match provider {
@@ -206,6 +352,12 @@ pub async fn run_llm_pipeline(
                 ));
                 return;
             };
+
+            let mut messages = Vec::new();
+            for (user_text, assistant_text) in &history_exchanges {
+                messages.push(serde_json::json!({"role": "user", "content": user_text}));
+                messages.push(serde_json::json!({"role": "assistant", "content": assistant_text}));
+            }
 
             let user_content =
                 api::claude::build_vision_message_content(&transcript, &capture.screenshots);
@@ -225,6 +377,19 @@ pub async fn run_llm_pipeline(
             .await
             .map_err(|error| error.to_string())
         }
+        LlmProvider::OpenAiCompat { base_url, api_key, model } => {
+            api::openai_compat::send_openai_vision_request(
+                &http_client,
+                &base_url,
+                api_key.as_deref(),
+                &model,
+                system_prompt,
+                &history_exchanges,
+                &transcript,
+                &capture.screenshots,
+            )
+            .await
+        }
         LlmProvider::Disabled => unreachable!(),
     };
 
@@ -238,27 +403,62 @@ pub async fn run_llm_pipeline(
                 screen_number: pointing.screen_number,
             });
 
-            if tts_enabled && !parsed.spoken_text.is_empty() {
-                if let Some(elevenlabs_api_key) = elevenlabs_api_key.clone() {
+            if !parsed.spoken_text.is_empty() {
+                if let Some(tts_conf) = tts_config {
                     let tts_client = http_client.clone();
                     let tts_ui_tx = ui_tx.clone();
-                    let tts_voice = elevenlabs_voice_id.clone();
                     let tts_text = parsed.spoken_text.clone();
 
                     tokio::spawn(async move {
-                        match api::elevenlabs::synthesize_speech(
-                            &tts_client,
-                            &elevenlabs_api_key,
-                            tts_voice.as_deref(),
-                            &tts_text,
-                        )
-                        .await
-                        {
-                            Ok(mp3_bytes) => {
-                                let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
+                        match tts_conf {
+                            TtsConfig::ElevenLabs { api_key, voice_id } => {
+                                match api::elevenlabs::synthesize_speech(
+                                    &tts_client,
+                                    &api_key,
+                                    voice_id.as_deref(),
+                                    &tts_text,
+                                )
+                                .await
+                                {
+                                    Ok(mp3_bytes) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
+                                    }
+                                    Err(error) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsError(error.to_string()));
+                                    }
+                                }
                             }
-                            Err(error) => {
-                                let _ = tts_ui_tx.send(UiEvent::TtsError(error.to_string()));
+                            TtsConfig::EdgeTts { voice } => {
+                                match api::edge_tts::synthesize_speech(&tts_text, voice.as_deref()).await {
+                                    Ok(mp3_bytes) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
+                                    }
+                                    Err(error) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsError(error));
+                                    }
+                                }
+                            }
+                            TtsConfig::OpenAiCompat { base_url, api_key, model, voice } => {
+                                match api::openai_tts::synthesize_speech(
+                                    &tts_client,
+                                    &base_url,
+                                    api_key.as_deref(),
+                                    &model,
+                                    &voice,
+                                    &tts_text,
+                                )
+                                .await
+                                {
+                                    Ok(mp3_bytes) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsAudio(mp3_bytes));
+                                    }
+                                    Err(error) => {
+                                        let _ = tts_ui_tx.send(UiEvent::TtsError(error));
+                                    }
+                                }
+                            }
+                            TtsConfig::System => {
+                                let _ = tts_ui_tx.send(UiEvent::TtsError("Fallback to system espeak-ng".into()));
                             }
                         }
                     });

@@ -163,17 +163,87 @@ fn main() {
     while !raylib_handle.window_should_close() {
         frame_count += 1;
         let delta_seconds = raylib_handle.get_frame_time() as f64;
-        let assemblyai_api_key = app_config.assemblyai_api_key.clone();
         let anthropic_api_key = app_config.anthropic_api_key.clone();
-        let elevenlabs_api_key = app_config.elevenlabs_api_key.clone();
-        let elevenlabs_voice_id = app_config.elevenlabs_voice_id.clone();
-        let transcription_enabled = assemblyai_api_key.is_some();
-        let tts_enabled = elevenlabs_api_key.is_some();
-        let llm_provider = if anthropic_api_key.is_some() {
-            LlmProvider::Anthropic
-        } else {
-            LlmProvider::Disabled
+
+        let stt_config = match app_config.stt_provider {
+            config::SttProviderType::AssemblyAI => {
+                app_config.assemblyai_api_key.clone().map(runtime::SttConfig::AssemblyAi)
+            }
+            config::SttProviderType::Groq => {
+                let base_url = app_config.stt_provider.default_base_url().to_string();
+                let model = app_config.stt_provider.default_model().to_string();
+                app_config.groq_api_key.clone().map(|key| runtime::SttConfig::Whisper {
+                    base_url,
+                    api_key: Some(key),
+                    model,
+                })
+            }
+            config::SttProviderType::OpenAiCompat => {
+                let base_url = app_config.custom_stt_base_url.clone()
+                    .unwrap_or_else(|| app_config.stt_provider.default_base_url().to_string());
+                let model = app_config.custom_stt_model.clone()
+                    .unwrap_or_else(|| app_config.stt_provider.default_model().to_string());
+                let api_key = app_config.custom_stt_api_key.clone();
+                Some(runtime::SttConfig::Whisper {
+                    base_url,
+                    api_key,
+                    model,
+                })
+            }
         };
+
+        let tts_config = match app_config.tts_provider {
+            config::TtsProviderType::ElevenLabs => {
+                app_config.elevenlabs_api_key.clone().map(|api_key| runtime::TtsConfig::ElevenLabs {
+                    api_key,
+                    voice_id: app_config.elevenlabs_voice_id.clone(),
+                })
+            }
+            config::TtsProviderType::EdgeTts => {
+                Some(runtime::TtsConfig::EdgeTts {
+                    voice: app_config.custom_tts_voice.clone(),
+                })
+            }
+            config::TtsProviderType::OpenAiCompat => {
+                let base_url = app_config.custom_tts_base_url.clone()
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                let model = app_config.custom_tts_model.clone()
+                    .unwrap_or_else(|| "tts-1".to_string());
+                let voice = app_config.custom_tts_voice.clone()
+                    .unwrap_or_else(|| "alloy".to_string());
+                Some(runtime::TtsConfig::OpenAiCompat {
+                    base_url,
+                    api_key: app_config.custom_tts_api_key.clone(),
+                    model,
+                    voice,
+                })
+            }
+            config::TtsProviderType::System => Some(runtime::TtsConfig::System),
+        };
+
+        let llm_provider = match app_config.llm_provider {
+            config::LlmProviderType::Anthropic => {
+                if app_config.anthropic_api_key.is_some() {
+                    runtime::LlmProvider::Anthropic
+                } else {
+                    runtime::LlmProvider::Disabled
+                }
+            }
+            provider_type => {
+                let base_url = app_config.custom_llm_base_url.clone()
+                    .unwrap_or_else(|| provider_type.default_base_url().to_string());
+                let model = app_config.custom_llm_model.clone()
+                    .unwrap_or_else(|| provider_type.default_model().to_string());
+                let api_key = app_config.custom_llm_api_key.clone();
+                runtime::LlmProvider::OpenAiCompat {
+                    base_url,
+                    api_key,
+                    model,
+                }
+            }
+        };
+
+        let transcription_enabled = stt_config.is_some();
 
         if last_config_poll_at.elapsed() >= Duration::from_millis(750) {
             last_config_poll_at = Instant::now();
@@ -259,9 +329,9 @@ fn main() {
                                             tokio::sync::oneshot::channel();
                                         active_session_cancel = Some(cancel_tx);
                                         let ui_tx = ui_event_tx.clone();
-                                        let api_key = assemblyai_api_key.clone();
+                                        let conf = stt_config.clone();
                                         tokio_rt.spawn(runtime::run_transcription_bridge(
-                                            audio_rx, ui_tx, api_key, cancel_rx,
+                                            audio_rx, ui_tx, conf, cancel_rx,
                                         ));
                                     }
                                 }
@@ -378,8 +448,7 @@ fn main() {
                         let ui_tx = ui_event_tx.clone();
                         let provider = llm_provider.clone();
                         let anthro_key = anthropic_api_key.clone();
-                        let el_key = elevenlabs_api_key.clone();
-                        let el_voice = elevenlabs_voice_id.clone();
+                        let tts_conf = tts_config.clone();
                         let client = http_client.clone();
                         let cursor_pos = cursor_tracker.get_position();
 
@@ -388,9 +457,7 @@ fn main() {
                             client,
                             provider,
                             anthro_key,
-                            el_key,
-                            el_voice,
-                            tts_enabled,
+                            tts_conf,
                             transcript,
                             cursor_pos,
                             history,
